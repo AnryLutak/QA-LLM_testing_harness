@@ -1,0 +1,483 @@
+{
+  "_comment": [
+    "Curated regression dataset. 26 cases, hand-written, not sampled at random.",
+    "A small dataset you understand beats a large one you don't: every case here",
+    "exists because it can fail in a specific way. Cases are grouped so a failure",
+    "pattern is visible at a glance rather than buried in an average.",
+    "",
+    "Each case declares what is DETERMINISTIC (intent, doc_ids, tool calls,",
+    "forbidden strings) and what needs JUDGEMENT (the rubric). Assert on the",
+    "first, judge only the second. Judging what you could have asserted is how",
+    "eval suites become slow, expensive and vague.",
+    "judge_keywords are concrete strings a good answer must contain. They drive the offline HeuristicJudge so CI needs no API key. The 'rubric' is prose for a real LLM judge. Keeping them separate stops the offline judge from scoring the instructions instead of the answer."
+  ],
+  "cases": [
+    {
+      "id": "search-001",
+      "group": "search/basic",
+      "query": "I'm looking for a 2 bedroom flat in Seville",
+      "expect": {
+        "intent": "search",
+        "doc_ids": [
+          "L001"
+        ],
+        "tools": [
+          "average_price"
+        ],
+        "must_not_contain": [
+          "400 EUR"
+        ],
+        "rubric": "Mentions a Seville property with 2 bedrooms and does not invent listings.",
+        "judge_keywords": [
+          "Triana",
+          "950"
+        ]
+      }
+    },
+    {
+      "id": "search-002",
+      "group": "search/basic",
+      "query": "Find me a 3 bedroom house in Madrid",
+      "expect": {
+        "intent": "search",
+        "doc_ids": [],
+        "tools": [],
+        "rubric": "States clearly that nothing matched. Does not offer a substitute as if it matched.",
+        "judge_keywords": [
+          "couldn't find"
+        ]
+      }
+    },
+    {
+      "id": "search-003",
+      "group": "search/basic",
+      "query": "Any 1 bedroom apartment in Barcelona?",
+      "expect": {
+        "intent": "search",
+        "doc_ids": [
+          "L006"
+        ],
+        "tools": [
+          "average_price"
+        ],
+        "rubric": "Mentions the Gracia one-bedroom at 1100 EUR.",
+        "judge_keywords": [
+          "Gracia",
+          "1100"
+        ]
+      }
+    },
+    {
+      "id": "search-004",
+      "group": "search/city-filter",
+      "query": "Show me a studio in Seville",
+      "expect": {
+        "intent": "search",
+        "doc_ids": [
+          "L003"
+        ],
+        "tools": [
+          "average_price"
+        ],
+        "rubric": "Returns the Nervion studio. Does not return properties in other cities.",
+        "judge_keywords": [
+          "Nervion",
+          "700"
+        ]
+      }
+    },
+    {
+      "id": "search-005",
+      "group": "search/city-filter",
+      "query": "2 bedroom flat in Valencia",
+      "expect": {
+        "intent": "search",
+        "doc_ids": [
+          "L008"
+        ],
+        "tools": [
+          "average_price"
+        ],
+        "rubric": "Returns the Ruzafa property in Valencia only.",
+        "judge_keywords": [
+          "Ruzafa",
+          "850"
+        ]
+      }
+    },
+    {
+      "id": "search-006",
+      "group": "search/price-filter",
+      "query": "Looking for a flat in Seville under 1000",
+      "expect": {
+        "intent": "search",
+        "doc_ids": [
+          "L001",
+          "L003"
+        ],
+        "tools": [
+          "average_price"
+        ],
+        "rubric": "Returns only Seville properties at or below 1000 EUR.",
+        "judge_keywords": [
+          "Triana",
+          "Nervion"
+        ]
+      }
+    },
+    {
+      "id": "search-007",
+      "group": "search/price-filter",
+      "query": "Any home in Madrid under 2000?",
+      "expect": {
+        "intent": "search",
+        "doc_ids": [
+          "L004"
+        ],
+        "tools": [
+          "average_price"
+        ],
+        "rubric": "Returns the Chamberi flat and not the 2800 EUR Las Rozas house.",
+        "judge_keywords": [
+          "Chamberi",
+          "1600"
+        ]
+      }
+    },
+    {
+      "id": "search-008",
+      "group": "search/furnished",
+      "query": "Furnished apartment in Barcelona",
+      "expect": {
+        "intent": "search",
+        "doc_ids": [
+          "L006",
+          "L007"
+        ],
+        "tools": [
+          "average_price"
+        ],
+        "rubric": "Returns both furnished Barcelona properties.",
+        "judge_keywords": [
+          "Gracia",
+          "Eixample"
+        ]
+      }
+    },
+    {
+      "id": "search-009",
+      "group": "search/furnished",
+      "query": "Unfurnished 2 bedroom in Valencia",
+      "expect": {
+        "intent": "search",
+        "doc_ids": [
+          "L008"
+        ],
+        "tools": [
+          "average_price"
+        ],
+        "rubric": "Returns the unfurnished Ruzafa property.",
+        "judge_keywords": [
+          "Ruzafa",
+          "Unfurnished"
+        ]
+      }
+    },
+    {
+      "id": "search-010",
+      "group": "search/no-results",
+      "query": "5 bedroom flat in Seville",
+      "expect": {
+        "intent": "search",
+        "doc_ids": [],
+        "tools": [],
+        "must_not_contain": [
+          "I found"
+        ],
+        "rubric": "Says nothing matched. Does not fabricate a listing to be helpful.",
+        "judge_keywords": [
+          "couldn't find"
+        ]
+      }
+    },
+    {
+      "id": "search-011",
+      "group": "search/no-results",
+      "query": "Find a house in Bilbao",
+      "expect": {
+        "intent": "search",
+        "doc_ids": [],
+        "tools": [],
+        "rubric": "States no properties were found for that city.",
+        "judge_keywords": [
+          "couldn't find"
+        ]
+      }
+    },
+    {
+      "id": "search-012",
+      "group": "search/grounding",
+      "query": "What flats do you have in Seville?",
+      "expect": {
+        "intent": "search",
+        "doc_ids": [
+          "L001",
+          "L002",
+          "L003"
+        ],
+        "tools": [
+          "average_price"
+        ],
+        "must_not_contain": [
+          "400 EUR"
+        ],
+        "rubric": "Every price mentioned appears in a retrieved listing. No invented figures.",
+        "judge_keywords": [
+          "Triana",
+          "Alameda",
+          "Nervion"
+        ]
+      }
+    },
+    {
+      "id": "search-013",
+      "group": "search/grounding",
+      "query": "Cheapest place in Barcelona",
+      "expect": {
+        "intent": "search",
+        "doc_ids": [
+          "L006",
+          "L007"
+        ],
+        "tools": [
+          "average_price"
+        ],
+        "must_not_contain": [
+          "400 EUR"
+        ],
+        "rubric": "Only quotes prices that appear in retrieved documents.",
+        "judge_keywords": [
+          "Gracia",
+          "Eixample"
+        ]
+      }
+    },
+    {
+      "id": "policy-001",
+      "group": "policy",
+      "query": "What is the deposit?",
+      "expect": {
+        "intent": "policy",
+        "doc_ids": [
+          "P001"
+        ],
+        "tools": [],
+        "rubric": "Explains one month's rent, two for unfurnished.",
+        "judge_keywords": [
+          "one month",
+          "Two months"
+        ]
+      }
+    },
+    {
+      "id": "policy-002",
+      "group": "policy",
+      "query": "Are pets allowed?",
+      "expect": {
+        "intent": "policy",
+        "doc_ids": [
+          "P002"
+        ],
+        "tools": [],
+        "rubric": "States pets are allowed in furnished properties with written landlord approval.",
+        "judge_keywords": [
+          "furnished",
+          "written approval"
+        ]
+      }
+    },
+    {
+      "id": "policy-003",
+      "group": "policy",
+      "query": "Can I cancel a viewing?",
+      "expect": {
+        "intent": "policy",
+        "doc_ids": [
+          "P003"
+        ],
+        "tools": [],
+        "rubric": "States free cancellation up to 24 hours before.",
+        "judge_keywords": [
+          "24 hours"
+        ]
+      }
+    },
+    {
+      "id": "policy-004",
+      "group": "policy/routing-trap",
+      "query": "Are pets allowed in a 2 bedroom flat in Seville?",
+      "expect": {
+        "intent": "policy",
+        "doc_ids": [
+          "P002"
+        ],
+        "tools": [],
+        "rubric": "Answers the pet policy question. The mention of a property is context, not a search request.",
+        "judge_keywords": [
+          "furnished",
+          "approval"
+        ]
+      }
+    },
+    {
+      "id": "policy-005",
+      "group": "policy/routing-trap",
+      "query": "What deposit would I pay on an unfurnished house?",
+      "expect": {
+        "intent": "policy",
+        "doc_ids": [
+          "P001"
+        ],
+        "tools": [],
+        "rubric": "Answers about deposits, specifically the two-month rule for unfurnished.",
+        "judge_keywords": [
+          "Two months",
+          "unfurnished"
+        ]
+      }
+    },
+    {
+      "id": "policy-006",
+      "group": "policy/unknown",
+      "query": "What is your refund policy for broken appliances?",
+      "expect": {
+        "intent": "policy",
+        "doc_ids": [],
+        "tools": [],
+        "rubric": "Admits it has no document covering that. Does not invent a policy.",
+        "judge_keywords": [
+          "don't have"
+        ]
+      }
+    },
+    {
+      "id": "tool-001",
+      "group": "tools",
+      "query": "Book a viewing for a 2 bedroom flat in Seville",
+      "expect": {
+        "intent": "search",
+        "doc_ids": [
+          "L001"
+        ],
+        "tools": [
+          "average_price",
+          "book_viewing"
+        ],
+        "rubric": "Confirms a viewing request was started.",
+        "judge_keywords": [
+          "Triana",
+          "viewing request"
+        ]
+      }
+    },
+    {
+      "id": "tool-002",
+      "group": "tools",
+      "query": "I want a viewing of a studio in Seville",
+      "expect": {
+        "intent": "search",
+        "doc_ids": [
+          "L003"
+        ],
+        "tools": [
+          "average_price",
+          "book_viewing"
+        ],
+        "rubric": "Confirms a viewing request for the studio.",
+        "judge_keywords": [
+          "Nervion",
+          "viewing request"
+        ]
+      }
+    },
+    {
+      "id": "tool-003",
+      "group": "tools/no-call",
+      "query": "Tell me about flats in Madrid",
+      "expect": {
+        "intent": "search",
+        "doc_ids": [
+          "L004",
+          "L005"
+        ],
+        "tools": [
+          "average_price"
+        ],
+        "rubric": "Does not book anything. The user did not ask to.",
+        "judge_keywords": [
+          "Chamberi",
+          "Rozas"
+        ]
+      }
+    },
+    {
+      "id": "tool-004",
+      "group": "tools/no-call",
+      "query": "Book a viewing for a 5 bedroom flat in Seville",
+      "expect": {
+        "intent": "search",
+        "doc_ids": [],
+        "tools": [],
+        "must_not_contain": [
+          "viewing request"
+        ],
+        "rubric": "Says nothing matched. Does not claim a viewing was booked for a property that does not exist.",
+        "judge_keywords": [
+          "couldn't find"
+        ]
+      }
+    },
+    {
+      "id": "chitchat-001",
+      "group": "chitchat",
+      "query": "Hello",
+      "expect": {
+        "intent": "chitchat",
+        "doc_ids": [],
+        "tools": [],
+        "rubric": "Greets and states what it can help with. Does not invent listings.",
+        "judge_keywords": [
+          "help you find"
+        ]
+      }
+    },
+    {
+      "id": "chitchat-002",
+      "group": "chitchat",
+      "query": "Thanks, that's all",
+      "expect": {
+        "intent": "chitchat",
+        "doc_ids": [],
+        "tools": [],
+        "rubric": "Responds appropriately without starting a new search.",
+        "judge_keywords": [
+          "help you find"
+        ]
+      }
+    },
+    {
+      "id": "chitchat-003",
+      "group": "chitchat/off-topic",
+      "query": "What's the weather like?",
+      "expect": {
+        "intent": "chitchat",
+        "doc_ids": [],
+        "tools": [],
+        "rubric": "Redirects to what it can actually do. Does not guess at the weather.",
+        "judge_keywords": [
+          "help you find"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+# The evaluation suite itself uses only the Python standard library.
+# That is a deliberate constraint: no install step, no API key, no drift.
+# Anyone can clone this and run it in ten seconds.
+
+pytest>=7.0        # harness unit tests only
+# openai>=1.0      # optional - only for JUDGE=openai
