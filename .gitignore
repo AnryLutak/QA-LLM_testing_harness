@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+reports/
+.venv/
+.pytest_cache/
+.DS_Store
+evals/.judge_cache.json
+calibration-run*.txt
+
+# Secrets. Nothing in this repo should ever hold a key, but the cost of the
+# entry is one line and the cost of the mistake is a rotated credential and a
+# rewritten history.
+.env
+.env.*
+*.key
+secrets.*

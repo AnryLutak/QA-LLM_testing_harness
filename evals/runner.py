@@ -47,6 +47,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent import agent, noise                # noqa: E402
 from evals import assertions, judge           # noqa: E402
+from evals.assertions import Status           # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -59,6 +60,28 @@ STAGE_ORDER = ["routing", "retrieval", "tool_call", "generation"]
 # quarters of the required content is present".
 JUDGE_THRESHOLD = 4
 
+# POLICY, not vocabulary. Status lives in assertions.py; this is the one place
+# where four states collapse into "does this block the build". When someone
+# later argues ERROR should only warn, this is the single line to change and
+# the single place to have the argument.
+BLOCKING = {Status.FAIL, Status.ERROR}
+
+
+def outcome(results):
+    """Collapse a run's checks into one of three case-level outcomes.
+
+    pass     at least one check actually evaluated, and nothing blocked
+    fail     something blocked
+    vacuous  every single check returned N/A — the case executed and asserted
+             NOTHING. This is not a pass. Counting it as one is how a suite
+             quietly stops testing while staying green.
+    """
+    if any(r.status in BLOCKING for r in results):
+        return "fail"
+    if all(r.status == Status.NA for r in results):
+        return "vacuous"
+    return "pass"
+
 
 def attribute(results):
     """Blame the EARLIEST failing stage, not the loudest one.
@@ -68,7 +91,7 @@ def attribute(results):
     input. Attributing to the earliest broken stage is what turns "the answer
     was wrong" into a ticket someone can pick up.
     """
-    failed = [r for r in results if not r.passed]
+    failed = [r for r in results if r.status in BLOCKING]
     if not failed:
         return None
     return min(failed, key=lambda r: STAGE_ORDER.index(r.stage)).stage
@@ -99,14 +122,23 @@ def run_once(case, j, seed, run_index):
     results = assertions.run_all(case, text, trace)
     score, reason = j.score(case, text, trace)
     blame = attribute(results)
+    verdict = outcome(results)
     return {
         "run": run_index,
         "answer": text,
-        "passed": blame is None,
+        "outcome": verdict,                    # pass | fail | vacuous
+        "passed": verdict == "pass",           # convenience for the arithmetic
         "blamed_stage": blame,
         "judge_score": score,
         "judge_reason": reason,
-        "checks": [{"name": r.name, "stage": r.stage, "passed": r.passed,
+        # Which checks declined to evaluate on THIS run. Aggregated per case so
+        # a check silently going vacuous is visible instead of invisible.
+        "na_checks": [r.name for r in results if r.status == Status.NA],
+        # Tracked separately from failures on purpose. A FAIL is the agent
+        # misbehaving; an ERROR is the harness unable to judge. Collapsing
+        # them sends you debugging the wrong codebase.
+        "error_checks": [r.name for r in results if r.status == Status.ERROR],
+        "checks": [{"name": r.name, "stage": r.stage, "status": r.status,
                     "detail": r.detail, "meta": r.meta} for r in results],
         "trace": trace.as_dict(),
     }
@@ -121,16 +153,26 @@ def run(dataset_path=DATASET, runs=1, seed=None):
 
     for case in cases:
         attempts = [run_once(case, j, seed, i) for i in range(runs)]
-        n_pass = sum(a["passed"] for a in attempts)
+        n_pass = sum(a["outcome"] == "pass" for a in attempts)
+        n_fail = sum(a["outcome"] == "fail" for a in attempts)
+        n_vac = sum(a["outcome"] == "vacuous" for a in attempts)
 
-        if n_pass == runs:
+        if n_vac == runs:
+            verdict = "vacuous"        # asserted nothing, every run
+        elif n_pass == runs:
             verdict = "pass"
-        elif n_pass == 0:
+        elif n_fail == runs:
             verdict = "fail"
         else:
             verdict = "flaky"          # the state a single run cannot report
 
         blames = Counter(a["blamed_stage"] for a in attempts if a["blamed_stage"])
+
+        # Per-check N/A counts. The number to watch is the RATE: a check that
+        # normally evaluates and starts declining to is coverage disappearing
+        # with no failure anywhere to announce it.
+        na_by_check = Counter(n for a in attempts for n in a["na_checks"])
+        error_by_check = Counter(n for a in attempts for n in a["error_checks"])
 
         rows.append({
             "id": case["id"],
@@ -138,9 +180,13 @@ def run(dataset_path=DATASET, runs=1, seed=None):
             "query": case["query"],
             "runs": runs,
             "passes": n_pass,
+            "fails": n_fail,
+            "vacuous": n_vac,
             "pass_rate": n_pass / runs,
             "verdict": verdict,
             "blamed_stages": dict(blames),
+            "na_by_check": dict(na_by_check),
+            "error_by_check": dict(error_by_check),
             "judge_scores": [a["judge_score"] for a in attempts],
             # Keep one representative attempt for the detail report, preferring
             # a failing one — a failure is the interesting artefact.
@@ -156,6 +202,22 @@ def summarise(rows, judge_name, runs):
     stable_pass = [r for r in rows if r["verdict"] == "pass"]
     flaky = [r for r in rows if r["verdict"] == "flaky"]
     stable_fail = [r for r in rows if r["verdict"] == "fail"]
+    vacuous = [r for r in rows if r["verdict"] == "vacuous"]
+
+    # Suite-wide N/A per check, and how many cases each check declined on.
+    # check_observations is per check per run, so the rate is comparable
+    # between checks regardless of how many cases exercise them.
+    na_totals = Counter()
+    na_cases = Counter()
+    err_totals = Counter()
+    err_cases = Counter()
+    for r in rows:
+        for name, n in r["na_by_check"].items():
+            na_totals[name] += n
+            na_cases[name] += 1
+        for name, n in r["error_by_check"].items():
+            err_totals[name] += n
+            err_cases[name] += 1
 
     observations = total_cases * runs
     successes = sum(r["passes"] for r in rows)
@@ -206,6 +268,12 @@ def summarise(rows, judge_name, runs):
         "stable_pass": len(stable_pass),
         "flaky": len(flaky),
         "stable_fail": len(stable_fail),
+        "vacuous": len(vacuous),
+        "na_by_check": dict(na_totals),
+        "na_cases_by_check": dict(na_cases),
+        "error_by_check": dict(err_totals),
+        "error_cases_by_check": dict(err_cases),
+        "error_observations": sum(err_totals.values()),
         "task_success_rate": round(successes / observations, 4),
         "ci95": [round(lo, 4), round(hi, 4)],
         "per_run_rates": [round(x, 4) for x in per_run],
@@ -232,7 +300,11 @@ def print_report(rows, summary):
     w(f"judge: {summary['judge']}   TEMP: {summary['temp']}   "
       f"cases: {summary['cases']} x {runs} runs = {summary['observations']} observations\n")
     w(f"stable pass: {summary['stable_pass']}   "
-      f"FLAKY: {summary['flaky']}   stable fail: {summary['stable_fail']}\n")
+      f"FLAKY: {summary['flaky']}   stable fail: {summary['stable_fail']}   "
+      f"VACUOUS: {summary['vacuous']}\n")
+    if summary["error_observations"]:
+        w(f"HARNESS ERRORS: {summary['error_observations']} observations "
+          f"— see below. Read these before trusting any rate on this page.\n")
 
     lo, hi = summary["ci95"]
     w(f"\ntask success rate: {summary['task_success_rate']:.1%}   "
@@ -282,9 +354,53 @@ def print_report(rows, summary):
             s = r["sample"]
             w(f"\n  {r['id']}  [{s['blamed_stage']}]  {r['query']!r}\n")
             for c in s["checks"]:
-                if not c["passed"]:
-                    w(f"     x {c['name']}: {c['detail']}\n")
+                if c["status"] in BLOCKING:
+                    w(f"     x {c['name']} [{c['status']}]: {c['detail']}\n")
             w(f"     answer: {s['answer'][:140]}\n")
+
+    vac = [r for r in rows if r["verdict"] == "vacuous"]
+    if vac:
+        w(f"\nVACUOUS CASES ({len(vac)}) — every check returned N/A. These ran\n"
+          "and asserted nothing. Not failures; not coverage either.\n" + "-" * 74 + "\n")
+        for r in vac:
+            w(f"  {r['id']:14} {r['query'][:56]!r}\n")
+
+    if summary["error_by_check"]:
+        obs = summary["observations"]
+        w("\n" + "!" * 74 + "\n")
+        w("HARNESS ERRORS — these are MY bugs, not the agent's.\n")
+        w("A check could not evaluate its input. Until this is zero, every\n"
+          "number above is measured with an instrument known to be broken.\n")
+        for name, n in sorted(summary["error_by_check"].items(), key=lambda x: -x[1]):
+            cases_n = summary["error_cases_by_check"][name]
+            w(f"  {name:20} {n:>5}/{obs} obs ({n/obs:5.1%})   "
+              f"on {cases_n}/{summary['cases']} cases\n")
+        # Show one concrete instance — an error you cannot see is an error
+        # you will not fix.
+        for r in rows:
+            for a in r["attempts"]:
+                for c in a["checks"]:
+                    if c["status"] == Status.ERROR:
+                        w(f"\n  example  {r['id']}  {c['name']}: {c['detail']}\n")
+                        w(f"           answer: {a['answer'][-90:]}\n")
+                        break
+                else:
+                    continue
+                break
+            else:
+                continue
+            break
+        w("!" * 74 + "\n")
+
+    if summary["na_by_check"]:
+        w("\nN/A BY CHECK — how often each check declined to evaluate\n")
+        w("  Watch the RATE over time, not the number. A check that normally\n"
+          "  evaluates and starts declining is coverage vanishing silently.\n")
+        obs = summary["observations"]
+        for name, n in sorted(summary["na_by_check"].items(), key=lambda x: -x[1]):
+            cases_n = summary["na_cases_by_check"][name]
+            w(f"  {name:20} {n:>5}/{obs} obs ({n/obs:5.1%})   "
+              f"on {cases_n}/{summary['cases']} cases\n")
 
     if summary["judge_below_threshold"]:
         w(f"\njudge below threshold ({JUDGE_THRESHOLD}/5): "

@@ -1,0 +1,332 @@
+{
+  "items": [
+    {
+      "query": "Show me a studio in Seville",
+      "case_id": "search-004",
+      "kind": "omission",
+      "truth": 2,
+      "answer": "I found 1 matching properties. Furnished, lift, 700 EUR/month. The average price is 700 EUR/month.",
+      "id": "lbl-000"
+    },
+    {
+      "query": "Looking for a flat in Seville under 1000",
+      "case_id": "search-006",
+      "kind": "wrong",
+      "truth": 1,
+      "answer": "I found 2 matching properties. Two-bedroom flat in Triana, Seville. Furnished, balcony, 1100 EUR/month. Studio in Nervion, Seville. Furnished, lift, 850 EUR/month. The average price is 975 EUR/month.",
+      "id": "lbl-001"
+    },
+    {
+      "query": "I'm looking for a 2 bedroom flat in Seville",
+      "case_id": "search-001",
+      "kind": "omission",
+      "truth": 2,
+      "answer": "I found 1 matching properties. Furnished, balcony, 950 EUR/month. The average price is 950 EUR/month.",
+      "id": "lbl-002"
+    },
+    {
+      "query": "Show me a studio in Seville",
+      "case_id": "search-004",
+      "kind": "padded",
+      "truth": 4,
+      "answer": "I found 1 matching properties. Studio in Nervion, Seville. Furnished, lift, 700 EUR/month. The average price is 700 EUR/month. I hope this helps with your search. Please let me know if you would like any further details about these properties, their availability, or the surrounding neighbourhoods, and I would be delighted to assist you further with anything else you may need.",
+      "id": "lbl-003"
+    },
+    {
+      "query": "Find me a 3 bedroom house in Madrid",
+      "case_id": "search-002",
+      "kind": "omission",
+      "truth": 2,
+      "answer": "",
+      "id": "lbl-004"
+    },
+    {
+      "query": "I'm looking for a 2 bedroom flat in Seville",
+      "case_id": "search-001",
+      "kind": "hedged",
+      "truth": 4,
+      "answer": "Based on what I could find, I found 1 matching properties. it seems that two-bedroom flat in Triana, Seville. as far as I can tell, furnished, balcony, 950 EUR/month. possibly the average price is 950 EUR/month.",
+      "id": "lbl-005"
+    },
+    {
+      "query": "2 bedroom flat in Valencia",
+      "case_id": "search-005",
+      "kind": "verbose_wrong",
+      "truth": 1,
+      "answer": "I found 1 matching properties. Two-bedroom in Ruzafa, Valencia. Unfurnished, 1000 EUR/month. The average price is 1000 EUR/month. I hope this helps with your search. Please let me know if you would like any further details about these properties, their availability, or the surrounding neighbourhoods, and I would be delighted to assist you further with anything else you may need.",
+      "id": "lbl-006"
+    },
+    {
+      "query": "Find me a 3 bedroom house in Madrid",
+      "case_id": "search-002",
+      "kind": "verbose_wrong",
+      "truth": 1,
+      "answer": "I found 2 matching properties. Two-bedroom flat in Triana, Seville. Furnished, balcony, 950 EUR/month. I hope this helps with your search. Please let me know if you would like any further details about these properties, their availability, or the surrounding neighbourhoods, and I would be delighted to assist you further with anything else you may need.",
+      "id": "lbl-007"
+    },
+    {
+      "query": "Show me a studio in Seville",
+      "case_id": "search-004",
+      "kind": "wrong",
+      "truth": 1,
+      "answer": "I found 1 matching properties. Studio in Nervion, Seville. Furnished, lift, 850 EUR/month. The average price is 850 EUR/month.",
+      "id": "lbl-008"
+    },
+    {
+      "query": "I'm looking for a 2 bedroom flat in Seville",
+      "case_id": "search-001",
+      "kind": "padded",
+      "truth": 4,
+      "answer": "I found 1 matching properties. Two-bedroom flat in Triana, Seville. Furnished, balcony, 950 EUR/month. The average price is 950 EUR/month. I hope this helps with your search. Please let me know if you would like any further details about these properties, their availability, or the surrounding neighbourhoods, and I would be delighted to assist you further with anything else you may need.",
+      "id": "lbl-009"
+    },
+    {
+      "query": "2 bedroom flat in Valencia",
+      "case_id": "search-005",
+      "kind": "hedged",
+      "truth": 4,
+      "answer": "Based on what I could find, I found 1 matching properties. it seems that two-bedroom in Ruzafa, Valencia. as far as I can tell, unfurnished, 850 EUR/month. possibly the average price is 850 EUR/month.",
+      "id": "lbl-010"
+    },
+    {
+      "query": "Show me a studio in Seville",
+      "case_id": "search-004",
+      "kind": "original",
+      "truth": 5,
+      "answer": "I found 1 matching properties. Studio in Nervion, Seville. Furnished, lift, 700 EUR/month. The average price is 700 EUR/month.",
+      "id": "lbl-011"
+    },
+    {
+      "query": "2 bedroom flat in Valencia",
+      "case_id": "search-005",
+      "kind": "padded",
+      "truth": 4,
+      "answer": "I found 1 matching properties. Two-bedroom in Ruzafa, Valencia. Unfurnished, 850 EUR/month. The average price is 850 EUR/month. I hope this helps with your search. Please let me know if you would like any further details about these properties, their availability, or the surrounding neighbourhoods, and I would be delighted to assist you further with anything else you may need.",
+      "id": "lbl-012"
+    },
+    {
+      "query": "I'm looking for a 2 bedroom flat in Seville",
+      "case_id": "search-001",
+      "kind": "verbose_wrong",
+      "truth": 1,
+      "answer": "I found 1 matching properties. Two-bedroom flat in Triana, Seville. Furnished, balcony, 1100 EUR/month. The average price is 1100 EUR/month. I hope this helps with your search. Please let me know if you would like any further details about these properties, their availability, or the surrounding neighbourhoods, and I would be delighted to assist you further with anything else you may need.",
+      "id": "lbl-013"
+    },
+    {
+      "query": "2 bedroom flat in Valencia",
+      "case_id": "search-005",
+      "kind": "wrong",
+      "truth": 1,
+      "answer": "I found 1 matching properties. Two-bedroom in Ruzafa, Valencia. Unfurnished, 1000 EUR/month. The average price is 1000 EUR/month.",
+      "id": "lbl-014"
+    },
+    {
+      "query": "Show me a studio in Seville",
+      "case_id": "search-004",
+      "kind": "verbose_wrong",
+      "truth": 1,
+      "answer": "I found 1 matching properties. Studio in Nervion, Seville. Furnished, lift, 850 EUR/month. The average price is 850 EUR/month. I hope this helps with your search. Please let me know if you would like any further details about these properties, their availability, or the surrounding neighbourhoods, and I would be delighted to assist you further with anything else you may need.",
+      "id": "lbl-015"
+    },
+    {
+      "query": "I'm looking for a 2 bedroom flat in Seville",
+      "case_id": "search-001",
+      "kind": "original",
+      "truth": 5,
+      "answer": "I found 1 matching properties. Two-bedroom flat in Triana, Seville. Furnished, balcony, 950 EUR/month. The average price is 950 EUR/month.",
+      "id": "lbl-016"
+    },
+    {
+      "query": "Any 1 bedroom apartment in Barcelona?",
+      "case_id": "search-003",
+      "kind": "original",
+      "truth": 5,
+      "answer": "I found 1 matching properties. One-bedroom in Gracia, Barcelona. Furnished, 1100 EUR/month. The average price is 1100 EUR/month.",
+      "id": "lbl-017"
+    },
+    {
+      "query": "Looking for a flat in Seville under 1000",
+      "case_id": "search-006",
+      "kind": "hedged",
+      "truth": 4,
+      "answer": "Based on what I could find, I found 2 matching properties. it seems that two-bedroom flat in Triana, Seville. as far as I can tell, furnished, balcony, 950 EUR/month. possibly studio in Nervion, Seville. I think furnished, lift, 700 EUR/month. it seems that the average price is 825 EUR/month.",
+      "id": "lbl-018"
+    },
+    {
+      "query": "Find me a 3 bedroom house in Madrid",
+      "case_id": "search-002",
+      "kind": "wrong",
+      "truth": 1,
+      "answer": "I found 2 matching properties. Two-bedroom flat in Triana, Seville. Furnished, balcony, 950 EUR/month.",
+      "id": "lbl-019"
+    },
+    {
+      "query": "Looking for a flat in Seville under 1000",
+      "case_id": "search-006",
+      "kind": "padded",
+      "truth": 4,
+      "answer": "I found 2 matching properties. Two-bedroom flat in Triana, Seville. Furnished, balcony, 950 EUR/month. Studio in Nervion, Seville. Furnished, lift, 700 EUR/month. The average price is 825 EUR/month. I hope this helps with your search. Please let me know if you would like any further details about these properties, their availability, or the surrounding neighbourhoods, and I would be delighted to assist you further with anything else you may need.",
+      "id": "lbl-020"
+    },
+    {
+      "query": "I'm looking for a 2 bedroom flat in Seville",
+      "case_id": "search-001",
+      "kind": "wrong",
+      "truth": 1,
+      "answer": "I found 1 matching properties. Two-bedroom flat in Triana, Seville. Furnished, balcony, 1100 EUR/month. The average price is 1100 EUR/month.",
+      "id": "lbl-021"
+    },
+    {
+      "query": "Find me a 3 bedroom house in Madrid",
+      "case_id": "search-002",
+      "kind": "hedged",
+      "truth": 4,
+      "answer": "Based on what I could find, I couldn't find any properties matching those criteria.",
+      "id": "lbl-022"
+    },
+    {
+      "query": "Any 1 bedroom apartment in Barcelona?",
+      "case_id": "search-003",
+      "kind": "wrong",
+      "truth": 1,
+      "answer": "I found 1 matching properties. One-bedroom in Gracia, Barcelona. Furnished, 1250 EUR/month. The average price is 1250 EUR/month.",
+      "id": "lbl-023"
+    },
+    {
+      "query": "Looking for a flat in Seville under 1000",
+      "case_id": "search-006",
+      "kind": "original",
+      "truth": 5,
+      "answer": "I found 2 matching properties. Two-bedroom flat in Triana, Seville. Furnished, balcony, 950 EUR/month. Studio in Nervion, Seville. Furnished, lift, 700 EUR/month. The average price is 825 EUR/month.",
+      "id": "lbl-024"
+    },
+    {
+      "query": "Show me a studio in Seville",
+      "case_id": "search-004",
+      "kind": "hedged",
+      "truth": 4,
+      "answer": "Based on what I could find, I found 1 matching properties. it seems that studio in Nervion, Seville. as far as I can tell, furnished, lift, 700 EUR/month. possibly the average price is 700 EUR/month.",
+      "id": "lbl-025"
+    },
+    {
+      "query": "Find me a 3 bedroom house in Madrid",
+      "case_id": "search-002",
+      "kind": "padded",
+      "truth": 4,
+      "answer": "I couldn't find any properties matching those criteria. I hope this helps with your search. Please let me know if you would like any further details about these properties, their availability, or the surrounding neighbourhoods, and I would be delighted to assist you further with anything else you may need.",
+      "id": "lbl-026"
+    },
+    {
+      "query": "2 bedroom flat in Valencia",
+      "case_id": "search-005",
+      "kind": "omission",
+      "truth": 2,
+      "answer": "I found 1 matching properties. Unfurnished, 850 EUR/month. The average price is 850 EUR/month.",
+      "id": "lbl-027"
+    },
+    {
+      "query": "2 bedroom flat in Valencia",
+      "case_id": "search-005",
+      "kind": "original",
+      "truth": 5,
+      "answer": "I found 1 matching properties. Two-bedroom in Ruzafa, Valencia. Unfurnished, 850 EUR/month. The average price is 850 EUR/month.",
+      "id": "lbl-028"
+    },
+    {
+      "query": "Looking for a flat in Seville under 1000",
+      "case_id": "search-006",
+      "kind": "verbose_wrong",
+      "truth": 1,
+      "answer": "I found 2 matching properties. Two-bedroom flat in Triana, Seville. Furnished, balcony, 1100 EUR/month. Studio in Nervion, Seville. Furnished, lift, 850 EUR/month. The average price is 975 EUR/month. I hope this helps with your search. Please let me know if you would like any further details about these properties, their availability, or the surrounding neighbourhoods, and I would be delighted to assist you further with anything else you may need.",
+      "id": "lbl-029"
+    },
+    {
+      "query": "Any 1 bedroom apartment in Barcelona?",
+      "case_id": "search-003",
+      "kind": "hedged",
+      "truth": 4,
+      "answer": "Based on what I could find, I found 1 matching properties. it seems that one-bedroom in Gracia, Barcelona. as far as I can tell, furnished, 1100 EUR/month. possibly the average price is 1100 EUR/month.",
+      "id": "lbl-030"
+    },
+    {
+      "query": "Any 1 bedroom apartment in Barcelona?",
+      "case_id": "search-003",
+      "kind": "verbose_wrong",
+      "truth": 1,
+      "answer": "I found 1 matching properties. One-bedroom in Gracia, Barcelona. Furnished, 1250 EUR/month. The average price is 1250 EUR/month. I hope this helps with your search. Please let me know if you would like any further details about these properties, their availability, or the surrounding neighbourhoods, and I would be delighted to assist you further with anything else you may need.",
+      "id": "lbl-031"
+    },
+    {
+      "query": "Any 1 bedroom apartment in Barcelona?",
+      "case_id": "search-003",
+      "kind": "omission",
+      "truth": 2,
+      "answer": "I found 1 matching properties. Furnished, 1100 EUR/month. The average price is 1100 EUR/month.",
+      "id": "lbl-032"
+    },
+    {
+      "query": "Find me a 3 bedroom house in Madrid",
+      "case_id": "search-002",
+      "kind": "original",
+      "truth": 5,
+      "answer": "I couldn't find any properties matching those criteria.",
+      "id": "lbl-033"
+    },
+    {
+      "query": "Looking for a flat in Seville under 1000",
+      "case_id": "search-006",
+      "kind": "omission",
+      "truth": 2,
+      "answer": "I found 2 matching properties. Furnished, balcony, 950 EUR/month. Studio in Nervion, Seville. Furnished, lift, 700 EUR/month. The average price is 825 EUR/month.",
+      "id": "lbl-034"
+    },
+    {
+      "query": "Any 1 bedroom apartment in Barcelona?",
+      "case_id": "search-003",
+      "kind": "padded",
+      "truth": 4,
+      "answer": "I found 1 matching properties. One-bedroom in Gracia, Barcelona. Furnished, 1100 EUR/month. The average price is 1100 EUR/month. I hope this helps with your search. Please let me know if you would like any further details about these properties, their availability, or the surrounding neighbourhoods, and I would be delighted to assist you further with anything else you may need.",
+      "id": "lbl-035"
+    }
+  ],
+  "labels": {
+    "lbl-000": 2,
+    "lbl-001": 1,
+    "lbl-002": 2,
+    "lbl-003": 4,
+    "lbl-004": 1,
+    "lbl-005": 4,
+    "lbl-008": 5,
+    "lbl-009": 4,
+    "lbl-010": 4,
+    "lbl-011": 5,
+    "lbl-012": 4,
+    "lbl-014": 5,
+    "lbl-016": 5,
+    "lbl-017": 5,
+    "lbl-018": 4,
+    "lbl-019": 1,
+    "lbl-020": 4,
+    "lbl-021": 5,
+    "lbl-022": 4,
+    "lbl-023": 1,
+    "lbl-024": 5,
+    "lbl-025": 4,
+    "lbl-026": 4,
+    "lbl-027": 2,
+    "lbl-028": 5,
+    "lbl-030": 4,
+    "lbl-032": 2,
+    "lbl-033": 5,
+    "lbl-034": 2,
+    "lbl-035": 4,
+    "lbl-006": 4,
+    "lbl-007": 1,
+    "lbl-013": 4,
+    "lbl-015": 4,
+    "lbl-029": 1,
+    "lbl-031": 4
+  },
+  "skipped": [],
+  "_migrated": 0
+}

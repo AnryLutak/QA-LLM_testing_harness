@@ -11,21 +11,40 @@ that the final answer was wrong.
 """
 
 from dataclasses import dataclass, field
+from enum import StrEnum
+
+
+class Status(StrEnum):
+    """The four conclusions a check can reach.
+
+    Defined HERE and not in runner.py. A check's status is part of the
+    vocabulary a check speaks; the runner is a consumer of that vocabulary.
+    Putting Status in the runner forces assertions to import their own
+    consumer — a circular import, and backwards layering even if Python
+    happened to tolerate it.
+
+    What does belong in the runner is BLOCKING: the policy that collapses
+    these four into a build decision. Vocabulary here, policy there.
+    """
+
+    PASS = "pass"
+    FAIL = "fail"
+    NA = "n/a"        # nothing to check — legitimately vacuous
+    ERROR = "error"   # could not evaluate. Harness bug, not agent bug.
 
 
 @dataclass
 class Result:
     name: str
     stage: str          # routing | retrieval | tool_call | generation
-    passed: bool
+    status: Status
     detail: str = ""
     meta: dict = field(default_factory=dict)
-
 
 def check_intent(trace, expected):
     got = (trace.get("routing") or {}).get("intent")
     return Result(
-        name="intent", stage="routing", passed=got == expected,
+        name="intent", stage="routing", status=Status.PASS if got == expected else Status.FAIL,
         detail=f"expected {expected!r}, got {got!r}",
         meta={"expected": expected, "actual": got},
     )
@@ -58,7 +77,8 @@ def check_retrieval(trace, expected_ids):
         detail = "; ".join(parts)
 
     return Result(
-        name="retrieval", stage="retrieval", passed=not missing and not extra,
+        name="retrieval", stage="retrieval", 
+        status=Status.PASS if not missing and not extra else Status.FAIL,
         detail=detail,
         meta={"precision": round(precision, 3), "recall": round(recall, 3),
               "missing": missing, "extra": extra},
@@ -81,31 +101,67 @@ def check_tools(trace, expected_names):
         detail = "; ".join(parts)
 
     return Result(
-        name="tool_calls", stage="tool_call", passed=not missing and not extra,
+        name="tool_calls", stage="tool_call", 
+        status=Status.PASS if not missing and not extra else Status.FAIL,
         detail=detail, meta={"expected": sorted(exp_set), "actual": sorted(got_set)},
     )
 
 
-def check_forbidden(text, forbidden):
-    """Substrings that must never appear — the cheapest hallucination guard.
+def check_forbidden(text, forbidden=None, forbidden_amounts=None):
+    """Content that must never appear. Two kinds, checked differently.
 
-    Not a general solution, but for a known failure mode ("quotes a price that
-    exists in no document") an exact string check is faster, cheaper and more
-    reliable than asking a model whether the answer was grounded.
+    STRINGS (`must_not_contain`) are for non-money phrases — "I found",
+    "viewing request". Boundary-aware substring matching is right for these.
+
+    AMOUNTS (`must_not_contain_amounts`) are for money, and they are compared
+    as normalised integers via money_mentions(). That makes them immune to
+    formatting: 400 catches "400 EUR", "€400", "400 euros" and "EUR 400"
+    alike. The string form could only ever catch the spelling it was written
+    in, which is how a reworded answer walked past this check.
     """
+    import re as _re
+    from evals.extract import money_mentions
+
+    forbidden = forbidden or []
+    forbidden_amounts = set(forbidden_amounts or [])
+
+    # Neither kind defined means there is nothing to check. NOT a pass.
+    if not forbidden and not forbidden_amounts:
+        return Result(
+            name="forbidden_content", stage="generation", status=Status.NA,
+            detail="no must_not_contain or must_not_contain_amounts for this case",
+            meta={"hits": [], "amount_hits": []},
+        )
+
     # Boundary-aware. Plain substring matching flagged the legitimate "1400 EUR"
     # as containing the forbidden "400 EUR" - a false positive that would have
     # had someone debugging a hallucination that never happened.
-    import re as _re
     hits = []
-    for f in (forbidden or []):
+    for f in forbidden:
         pattern = r"(?<![\w.])" + _re.escape(f) + r"(?![\w.])"
         if _re.search(pattern, text, _re.IGNORECASE):
             hits.append(f)
+
+    amount_hits = []
+    if forbidden_amounts:
+        money = money_mentions(text)
+        # Fail closed, exactly as check_grounding does. If the answer contains
+        # money we cannot read, we cannot claim the forbidden amount is absent.
+        if money.unparseable:
+            return Result(
+                name="forbidden_content", stage="generation", status=Status.ERROR,
+                detail=f"cannot parse money, so cannot rule out {sorted(forbidden_amounts)}: "
+                       f"{money.unparseable}",
+                meta={"unparseable": money.unparseable},
+            )
+        amount_hits = sorted(forbidden_amounts & money.values)
+
+    found = bool(hits or amount_hits)
     return Result(
-        name="forbidden_content", stage="generation", passed=not hits,
-        detail=f"found {hits}" if hits else "none present",
-        meta={"hits": hits},
+        name="forbidden_content", stage="generation",
+        status=Status.FAIL if found else Status.PASS,
+        detail=(f"found {hits + amount_hits}" if found else "none present"),
+        meta={"hits": hits, "amount_hits": amount_hits},
     )
 
 
@@ -115,22 +171,31 @@ def check_grounding(text, trace):
     This is the assertion that catches the hallucinated-price bug without a
     judge. Cheap, exact, and it fails with a specific number you can point at.
     """
-    import re
+
     from agent import knowledge
+    from evals.extract import money_mentions
 
-    currency = r"(?:€|EURO?|euros?)"
-    amount = r"(\d{1,3}(?:,\d{3})+|\d{3,5})"
+    m = money_mentions(text)
 
-    before = re.findall(rf"{currency}\s*{amount}", text, re.IGNORECASE)
-    after = re.findall(rf"{amount}\s*{currency}", text, re.IGNORECASE)
+    # Guard clauses: each early return is one reason to stop, read on its own.
+    if m.unparseable:
+        return Result(
+            name="grounding", stage="generation", status=Status.ERROR,
+            # Name what broke IN THE DETAIL — that is the line the report
+            # prints. meta only reaches the JSON, which nobody reads first.
+            detail=f"cannot parse: {m.unparseable}",
+            meta={"quoted": [], "unparseable": m.unparseable, "ungrounded": []},
+        )
 
-    quoted = {
-        int(x.replace(",", ""))
-        for x in before + after
-    }
-    if not quoted:
-        return Result(name="grounding", stage="generation", passed=True,
-                      detail="no figures quoted")
+    if not m.values:
+        return Result(
+            name="grounding", stage="generation", status=Status.NA,
+            detail="no figures quoted",
+            # NOT the whole answer text. This runs on every N/A observation —
+            # 253 of them at TEMP=0.3 x 20 runs — and each would carry a full
+            # answer into the JSON report for no diagnostic gain.
+            meta={"quoted": [], "ungrounded": []},
+        )
 
     retrieved = (trace.get("retrieval") or {}).get("doc_ids", [])
     allowed = {knowledge.get(i)["price"] for i in retrieved
@@ -141,12 +206,13 @@ def check_grounding(text, trace):
         if isinstance(call.get("result"), (int, float)):
             allowed.add(int(call["result"]))
 
-    ungrounded = sorted(quoted - allowed)
+    ungrounded = sorted(m.values - allowed)
     return Result(
-        name="grounding", stage="generation", passed=not ungrounded,
+        name="grounding", stage="generation",
+        status=Status.PASS if not ungrounded else Status.FAIL,
         detail=(f"figures not in any retrieved doc: {ungrounded}" if ungrounded
-                else f"all {len(quoted)} figures grounded"),
-        meta={"quoted": sorted(quoted), "allowed": sorted(allowed), "ungrounded": ungrounded},
+                else f"all {len(m.values)} figures grounded"),
+        meta={"quoted": sorted(m.values), "allowed": sorted(allowed), "ungrounded": ungrounded},
     )
 
 
@@ -166,6 +232,16 @@ def check_tool_results(trace):
 
     calls = (trace.get("tool_call") or {}).get("calls", [])
     doc_ids = (trace.get("retrieval") or {}).get("doc_ids", [])
+
+    # No tool calls means no tool results to recompute. Previously this
+    # returned "tool outputs match recomputation" — a confident pass over an
+    # empty list. Whether a tool SHOULD have been called is check_tools' job.
+    if not calls:
+        return Result(
+            name="tool_results", stage="tool_call", status=Status.NA,
+            detail="no tool calls to verify", meta={"problems": []},
+        )
+
     problems = []
 
     for call in calls:
@@ -192,7 +268,8 @@ def check_tool_results(trace):
                     f"the retrieved listings {doc_ids}")
 
     return Result(
-        name="tool_results", stage="tool_call", passed=not problems,
+        name="tool_results", stage="tool_call", 
+        status=Status.PASS if not problems else Status.FAIL,
         detail="; ".join(problems) if problems else "tool outputs match recomputation",
         meta={"problems": problems},
     )
@@ -205,7 +282,9 @@ def run_all(case, text, trace):
         check_retrieval(trace, exp.get("doc_ids", [])),
         check_tools(trace, exp.get("tools", [])),
         check_tool_results(trace),
-        check_forbidden(text, exp.get("must_not_contain")),
+        check_forbidden(text,
+                        exp.get("must_not_contain"),
+                        exp.get("must_not_contain_amounts")),
         check_grounding(text, trace),
     ]
     return results

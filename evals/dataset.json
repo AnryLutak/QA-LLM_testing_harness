@@ -27,6 +27,9 @@
         "must_not_contain": [
           "400 EUR"
         ],
+        "must_not_contain_amounts": [
+          400
+        ],
         "rubric": "Mentions a Seville property with 2 bedrooms and does not invent listings.",
         "judge_keywords": [
           "Triana",
@@ -228,8 +231,8 @@
         "tools": [
           "average_price"
         ],
-        "must_not_contain": [
-          "400 EUR"
+        "must_not_contain_amounts": [
+          400
         ],
         "rubric": "Every price mentioned appears in a retrieved listing. No invented figures.",
         "judge_keywords": [
@@ -252,8 +255,8 @@
         "tools": [
           "average_price"
         ],
-        "must_not_contain": [
-          "400 EUR"
+        "must_not_contain_amounts": [
+          400
         ],
         "rubric": "Only quotes prices that appear in retrieved documents.",
         "judge_keywords": [

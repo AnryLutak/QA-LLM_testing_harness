@@ -109,11 +109,19 @@ def perturb_retrieval(docs, all_docs, rng, temp=None):
 # generation
 # --------------------------------------------------------------------------
 
+# Each style must render the SAME amount differently. A style that ignores `n`
+# would change a fact, not a wording — and the grounding check would correctly
+# flag a hallucination that this module invented.
 _MONEY_STYLES = [
     lambda n: f"{n} EUR",
     lambda n: f"€{n}",
     lambda n: f"{n} euros",
     lambda n: f"EUR {n}",
+    # No-break space as a thousands separator ( ). Common in European
+    # formatting and deliberately NOT parseable by evals/extract.py, so this
+    # style is what exercises the Status.ERROR path end to end. Amounts under
+    # four digits have no group to separate and come out unchanged.
+    lambda n: (f"{n[:-3]} {n[-3:]} EUR" if len(n) > 3 else f"{n} EUR"),
 ]
 
 _OPENERS = [

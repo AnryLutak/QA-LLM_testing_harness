@@ -1,0 +1,50 @@
+name: eval
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: pip install pytest
+
+      # The evaluation itself needs no third-party packages and no API key.
+      # That is deliberate: a suite that only runs with credentials is a suite
+      # that stops running.
+      - name: Run evaluation suite
+        run: python -m evals.runner --json reports/run.json
+
+      # An eval suite that cannot fail proves nothing. This asserts the suite
+      # still detects each known regression — testing the tests.
+      - name: Verify the suite detects known regressions
+        run: |
+          set -e
+          for bug in router_prefers_search retrieval_ignores_city \
+                     retrieval_returns_everything tool_rounds_wrong \
+                     tool_skips_booking generation_hallucinates_price; do
+            if BUGS=$bug python -m evals.runner > /dev/null 2>&1; then
+              echo "::error::suite did NOT detect $bug"
+              exit 1
+            fi
+            echo "detected: $bug"
+          done
+
+      - name: Harness unit tests
+        run: python -m pytest tests/ -v
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: reports/
