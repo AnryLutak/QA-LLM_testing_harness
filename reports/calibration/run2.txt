@@ -1,0 +1,61 @@
+
+==========================================================================
+JUDGE CALIBRATION
+==========================================================================
+
+REFERENCE CHECK — validate the standard before blaming a rater
+  all degradations verified distinct from their original
+
+  usable items: 30 of 30
+
+  judge cache: 207 cached, 63 fetched
+
+AGREEMENT vs GROUND TRUTH  (n=30)
+  rater                    exact  within 1    kappa  wtd kappa
+  human                     67%       90%     0.58       0.57
+  heuristic                 23%       63%     0.04       0.53
+  openai-vague              30%       73%     0.13       0.37
+  openai-anchored           43%       77%     0.29       0.40
+  openai-context            53%       80%     0.42       0.75
+
+AGREEMENT vs HUMAN LABELS
+  judge                    exact  within 1    kappa  wtd kappa
+  heuristic                 27%       83%     0.08       0.57
+  openai-vague              53%       87%     0.36       0.70
+  openai-anchored           63%       90%     0.49       0.71
+  openai-context            63%       73%     0.49       0.53
+
+MEAN SCORE BY VARIANT — the diagnostic table
+  variant     n  truth  human       heuristic    openai-vague  openai-anchore  openai-context
+  original    6      5   5.00            5.00            5.00            4.83            5.00
+  padded      6      4   4.00            5.00            4.50            4.17            3.83
+  hedged      6      3   4.00            5.00            4.00            4.00            4.00
+  omission    6      2   1.83            2.67            3.33            2.83            3.17
+  wrong       6      1   3.00            3.00            3.33            3.33            1.33
+
+  A judge that scores a degraded variant at or above its 'original'
+  row is blind to that defect, whatever its agreement number says.
+  'wrong' is the one that matters: truth=1, and detecting it
+  requires the retrieved documents — coherence alone cannot find it.
+
+BIAS PROBES
+  rater                   length r   self-consistency
+  human                      +0.26  n/a (single pass)
+  heuristic                  +0.56               100%
+  openai-vague               +0.26                97%  temp=0
+  openai-anchored            +0.11               100%  temp=0
+  openai-context             +0.19                80%  temp=0
+    length r > 0 means longer answers score higher regardless of quality
+    self-consistency = share of items where all --repeat runs agreed.
+    temperature=0 does NOT guarantee determinism, so this is measured.
+    'temp=model default' means the model REFUSED to be pinned (reasoning
+    models fix temperature at 1). Expect lower consistency there, and
+    treat a single-run score from such a judge as one draw, not a verdict.
+
+  rater drift over time   r=-0.10
+    correlation between labelling ORDER and (human - truth)
+
+CAVEAT: one rater, n=30. There is no inter-rater agreement here, so
+'the judge agrees with a human' means it agrees with ONE human's taste,
+and a kappa from 30 items has a wide confidence interval.
+==========================================================================

@@ -28,7 +28,13 @@ Anything the detector finds and the parser cannot resolve goes to
 and this whole design collapses back into the bug.
 """
 
+import os
+import sys
+
 import pytest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 from evals.extract import money_mentions
 
@@ -53,6 +59,16 @@ PARSES = [
     # --- comma as thousands separator, currently working ----------------
     pytest.param("1,400 EUR/month",         {1400},       id="comma-thousands"),
     pytest.param("€1,400",                  {1400},       id="symbol-comma-thousands"),
+
+    # --- space as a thousands separator ----------------------------------
+    # These MOVED here from UNPARSEABLE on purpose. They were pinned as
+    # unreadable while the parser only knew "." and ","; once it learned the
+    # space forms they became ordinary parses. Moving a row between tables is
+    # a decision, so it gets a note — deleting it silently is how a battery
+    # quietly stops testing the thing it was written for.
+    pytest.param("Prices from 1 400 EUR",   {1400},       id="space-thousands"),
+    pytest.param("Rent is EUR 1 250/month", {1250},       id="EUR-then-space-thousands"),
+    pytest.param("about \u00a01 100 EUR",     {1100},       id="nbsp-thousands"),
 
     # --- KNOWN FAILING. Spanish/European thousands separator ------------
     # The first is the dangerous one: it does not fail to parse, it parses
@@ -103,9 +119,12 @@ NO_MONEY = [
 # ---------------------------------------------------------------------------
 
 UNPARSEABLE = [
-    pytest.param("Prices from 1 400 EUR",   id="space-thousands-separator"),
-    pytest.param("Rent is EUR 1 250/month", id="space-thousands-after-EUR"),
-    pytest.param("about €12345678",         id="implausibly-long-number"),
+    # At least one row must survive here or the two-regex design collapses:
+    # with nothing unparseable, ERROR is unreachable and
+    # test_detector_is_looser_than_the_parser passes by vacuum.
+    pytest.param("about €12345678",  id="implausibly-long-number"),
+    pytest.param("from 1.4k EUR",    id="abbreviated-thousands"),
+    pytest.param("around 1,4k EUR",  id="abbreviated-thousands-comma"),
 ]
 
 
@@ -152,7 +171,7 @@ def test_detector_is_looser_than_the_parser():
     with extra ceremony. This is the one assertion that fails loudly if the
     implementation quietly drops the two-regex design.
     """
-    assert money_mentions("Prices from 1 400 EUR").unparseable, \
+    assert money_mentions("from 1.4k EUR").unparseable, \
         "detector and parser appear to be the same expression"
 
 
@@ -179,3 +198,37 @@ def test_values_are_ints_not_strings():
 def test_spelled_out_amounts_are_a_known_gap():
     m = money_mentions("Some listings start from four hundred euros a month.")
     assert m.values == {400} or m.unparseable
+
+
+# ---------------------------------------------------------------------------
+# The seeded harness bug.
+#
+# ERROR is a tripwire: once the parser is fixed it should almost never fire,
+# which means nothing exercises it end to end. The answer is NOT to leave a
+# real check broken for the demo — it is a labelled, opt-in defect, exactly
+# like BUGS= in agent/agent.py. This test keeps that switch honest.
+# ---------------------------------------------------------------------------
+
+def test_seeded_naive_parser_makes_ERROR_reachable():
+    """HARNESS_BUGS=money_parser_naive must reproduce the original fail-open
+    shape: separators become unreadable, so the caller reports ERROR."""
+    import subprocess, sys, os
+    code = (
+        "import sys; sys.path.insert(0, %r)\n"
+        "from evals.extract import money_mentions\n"
+        "m = money_mentions('1 400 EUR and 1.400 EUR')\n"
+        "assert not m.values, m.values\n"
+        "assert len(m.unparseable) == 2, m.unparseable\n"
+        "print('ok')\n" % ROOT
+    )
+    env = dict(os.environ, HARNESS_BUGS="money_parser_naive")
+    p = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                       text=True, env=env, cwd=ROOT)
+    assert p.returncode == 0, f"naive mode did not behave as seeded:\n{p.stderr}"
+
+
+def test_default_parser_is_not_naive():
+    """The seeded bug must be OFF by default, or 'fixed' means nothing."""
+    m = money_mentions("1 400 EUR and 1.400 EUR")
+    assert m.values == {1400}, m.values
+    assert m.unparseable == []

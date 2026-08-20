@@ -1,11 +1,25 @@
 __pycache__/
 *.pyc
-reports/
 .venv/
 .pytest_cache/
 .DS_Store
+
+# Generated locally, cheap to regenerate, no API key needed. Committing these
+# means every run churns the diff and a stale copy eventually gets believed.
+reports/*
+flaky-baseline*.txt
+
+# ...except the calibration runs, which CANNOT be regenerated: each measures a
+# model version on a date, and the provider moves what sits behind a model id.
+# See reports/calibration/README.md.
+!reports/calibration/
+
+# Judge response cache. Local, disposable, and it holds a record of every
+# prompt sent — not something to publish.
 evals/.judge_cache.json
-calibration-run*.txt
+
+# Personal learning notes, not part of the harness.
+my-experience.md
 
 # Secrets. Nothing in this repo should ever hold a key, but the cost of the
 # entry is one line and the cost of the mistake is a rotated credential and a

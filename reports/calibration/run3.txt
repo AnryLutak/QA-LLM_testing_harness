@@ -1,0 +1,74 @@
+
+==========================================================================
+JUDGE CALIBRATION
+==========================================================================
+
+REFERENCE CHECK — validate the standard before blaming a rater
+  all degradations verified distinct from their original
+
+  usable items: 36 of 36
+
+  judge cache: 0 cached, 324 fetched   tag=run3
+
+AGREEMENT vs GROUND TRUTH  (n=36)
+  rater                    exact  within 1    kappa  wtd kappa
+  human                     78%       81%     0.70       0.52
+  heuristic                 22%       72%     0.12       0.58
+  openai-vague              33%       72%     0.19       0.32
+  openai-anchored           42%       72%     0.27       0.33
+  openai-context            67%       89%     0.55       0.86
+
+AGREEMENT vs HUMAN LABELS
+  judge                    exact  within 1    kappa  wtd kappa
+  heuristic                 25%       83%     0.11       0.51
+  openai-vague              42%       86%     0.25       0.62
+  openai-anchored           50%       86%     0.34       0.70
+  openai-context            64%       69%     0.50       0.53
+
+MEAN SCORE BY VARIANT — the diagnostic table
+  variant     n  truth  human       heuristic    openai-vague  openai-anchore  openai-context
+  original    6      5   5.00            5.00            5.00            4.83            5.00
+  padded      6      4   4.00            5.00            4.50            4.33            3.83
+  hedged      6      4   4.00            5.00            4.17            3.67            4.17
+  omission    6      2   1.83            2.67            3.83            2.83            2.83
+  wrong       6      1   3.00            3.00            3.33            3.33            1.17
+  verbose_wrong  6      1   3.00            3.00            3.33            3.33            1.67
+
+  A judge that scores a degraded variant at or above its 'original'
+  row is blind to that defect, whatever its agreement number says.
+
+  ! CIRCULARITY: 'omission' is DEFINED as removing a judge_keyword,
+    and HeuristicJudge scores on judge_keywords. It cannot miss this
+    defect — detection there is mechanical, not judgement. Discount
+    its omission column and any aggregate that includes it.
+  'wrong' is the one that matters: truth=1, and detecting it
+  requires the retrieved documents — coherence alone cannot find it.
+
+BIAS PROBES
+  BASELINE  corr(length, TRUTH) = -0.07
+    Read every length r below AGAINST this number, not against zero.
+    If the dataset's own defects correlate with length, a PERFECT rater
+    shows a length correlation too, and the probe measures the dataset
+    rather than the rater. |baseline| under ~0.15 means the probe is
+    interpretable; above that, fix the dataset before reading the column.
+
+  rater                   length r   self-consistency
+  human                      +0.09  n/a (single pass)
+  heuristic                  +0.23               100%
+  openai-vague               -0.06                92%  temp=0
+  openai-anchored            +0.03               100%  temp=0
+  openai-context             -0.07                94%  temp=0
+    length r > 0 means longer answers score higher regardless of quality
+    self-consistency = share of items where all --repeat runs agreed.
+    temperature=0 does NOT guarantee determinism, so this is measured.
+    'temp=model default' means the model REFUSED to be pinned (reasoning
+    models fix temperature at 1). Expect lower consistency there, and
+    treat a single-run score from such a judge as one draw, not a verdict.
+
+  rater drift over time   r=-0.08
+    correlation between labelling ORDER and (human - truth)
+
+CAVEAT: one rater, n=36. There is no inter-rater agreement here, so
+'the judge agrees with a human' means it agrees with ONE human's taste,
+and a kappa from 36 items has a wide confidence interval.
+==========================================================================

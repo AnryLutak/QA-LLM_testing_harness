@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import os
 import re
 
 @dataclass
@@ -8,22 +9,43 @@ class Money:
 
 CURRENCY = r"(?:€|eur(?:os?)?\b)"
 SPACES    = "\u0020\u00a0\u202f"          # space, no-break, narrow no-break
-NUM_LOOSE = rf"\d[\d.,{SPACES}]*\d|\d"    # LOOSE: any digit-led run
+# The trailing [kKmM] matters: without it "1.4k EUR" is not DETECTED at
+# all, so it returns as "no money" rather than as an unreadable amount —
+# the fail-open bug this module exists to prevent, one layer further out.
+# The detector must be loose enough to notice everything money-shaped,
+# including shapes the parser will refuse.
+NUM_LOOSE = rf"\d[\d.,{SPACES}]*\d[kKmM]?|\d[kKmM]?"    # LOOSE: any digit-led run
 
 DETECT = re.compile(
     rf"{CURRENCY}\s*(?P<a>{NUM_LOOSE})|(?P<b>{NUM_LOOSE})\s*{CURRENCY}",
     re.IGNORECASE,
 )
 
-STRICT = re.compile(r"^\d{1,3}(?:[.,]\d{3})+$|^\d+$")   # TIGHT
+# A thousands separator is a dot, a comma, or a space (plain / no-break /
+# narrow no-break) followed by EXACTLY three digits. The rule is about the
+# group length, not the symbol, which is why the same expression covers
+# "1.400", "1,400" and "1 400" without any locale detection.
+_SEP = "[.,\u0020\u00a0\u202f]"
+STRICT = re.compile("^\\d{1,3}(?:" + _SEP + "\\d{3})+$|^\\d+$")
+
+# The parser as it was before it learned separators: digits only, nothing
+# else. Reachable via HARNESS_BUGS=money_parser_naive, which is how the
+# ERROR path gets demonstrated end to end WITHOUT leaving a real check
+# broken. Same idea as BUGS= in agent/agent.py: a seeded, labelled, opt-in
+# defect beats a genuine one kept around for the screenshot.
+NAIVE = re.compile(r"^\d{3,5}$")
+
+HARNESS_BUGS = {b.strip() for b in os.environ.get("HARNESS_BUGS", "").split(",")
+                if b.strip()}   # TIGHT
 MIN_PLAUSIBLE, MAX_PLAUSIBLE = 100, 999_999
 
 def _parse(raw):
     """One span -> int, or None if this parser will not guess."""
     candidate = raw.strip()
-    if not STRICT.match(candidate):
+    pattern = NAIVE if "money_parser_naive" in HARNESS_BUGS else STRICT
+    if not pattern.match(candidate):
         return None
-    value = int(candidate.replace(".", "").replace(",", ""))
+    value = int(re.sub(_SEP, "", candidate))
     if not (MIN_PLAUSIBLE <= value <= MAX_PLAUSIBLE):
         return None
     return value

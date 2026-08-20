@@ -39,6 +39,7 @@ import argparse
 import json
 import math
 import os
+import random
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -114,6 +115,42 @@ def wilson(k, n, z=1.96):
     centre = (p + z * z / (2 * n)) / d
     half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
     return max(0.0, centre - half), min(1.0, centre + half)
+
+
+def bootstrap_case_ci(per_case_rates, runs=1, iters=4000, seed="case-ci"):
+    """95% interval for "how well does this system handle queries IN GENERAL".
+
+    Deliberately NOT Wilson over the 520 case-runs. Those are not 520
+    independent trials: twenty runs of one case are twenty looks at the SAME
+    case, not twenty draws from the space of user queries. Treating them as
+    independent answers a question nobody asked and answers it too
+    confidently.
+
+    The independent unit for generalisation is the CASE, so this resamples
+    cases with replacement and recomputes the mean pass rate. It is wide, and
+    it should be: 26 cases is a small sample of "things a user might ask".
+
+    Seeded, so the report is reproducible run to run.
+    """
+    n = len(per_case_rates)
+    if n < 2:
+        return 0.0, 1.0
+    rng = random.Random(seed)
+    means = []
+    for _ in range(iters):
+        total = 0.0
+        for _ in range(n):
+            p = per_case_rates[rng.randrange(n)]        # resample the CASE
+            if runs > 1:
+                # ...and re-draw that case's own runs. Two levels, because a
+                # case's observed rate is itself an estimate from `runs`
+                # samples: 19/20 is not a known 95%, it is a noisy one.
+                # Holding it fixed understates the interval by ~1pp here.
+                p = sum(rng.random() < p for _ in range(runs)) / runs
+            total += p
+        means.append(total / n)
+    means.sort()
+    return means[int(0.025 * iters)], means[int(0.975 * iters)]
 
 
 def run_once(case, j, seed, run_index):
@@ -222,6 +259,7 @@ def summarise(rows, judge_name, runs):
     observations = total_cases * runs
     successes = sum(r["passes"] for r in rows)
     lo, hi = wilson(successes, observations)
+    case_lo, case_hi = bootstrap_case_ci([r["pass_rate"] for r in rows], runs)
 
     # Run-to-run spread: the pass rate of each COMPLETE pass over the dataset.
     # This is what a CI job would have printed on run i.
@@ -276,6 +314,7 @@ def summarise(rows, judge_name, runs):
         "error_observations": sum(err_totals.values()),
         "task_success_rate": round(successes / observations, 4),
         "ci95": [round(lo, 4), round(hi, 4)],
+        "ci95_cases": [round(case_lo, 4), round(case_hi, 4)],
         "per_run_rates": [round(x, 4) for x in per_run],
         "per_run_mean": round(mean, 4),
         "per_run_sd": round(sd, 4),
@@ -307,8 +346,19 @@ def print_report(rows, summary):
           f"— see below. Read these before trusting any rate on this page.\n")
 
     lo, hi = summary["ci95"]
-    w(f"\ntask success rate: {summary['task_success_rate']:.1%}   "
-      f"95% CI [{lo:.1%}, {hi:.1%}]\n")
+    clo, chi = summary["ci95_cases"]
+    w(f"\ntask success rate: {summary['task_success_rate']:.1%}\n")
+    w(f"  reproducibility  95% CI [{lo:.1%}, {hi:.1%}]   "
+      f"(n={summary['observations']} case-runs, Wilson)\n")
+    w(f"                   \"will CI print roughly this again tomorrow?\"  "
+      f"-> narrows with --runs\n")
+    w(f"  generalisation   95% CI [{clo:.1%}, {chi:.1%}]   "
+      f"(n={summary['cases']} cases, bootstrap)\n")
+    w(f"                   \"how well does this handle queries in general?\"  "
+      f"-> narrows ONLY with more cases\n")
+    w("  Quoting the first while meaning the second is the easiest mistake\n"
+      "  on this page: it turns a claim about your test run into a claim\n"
+      "  about your product.\n")
 
     if runs > 1:
         w(f"per-run spread:    mean {summary['per_run_mean']:.1%}   "
