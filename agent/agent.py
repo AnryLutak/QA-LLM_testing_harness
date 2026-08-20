@@ -21,9 +21,17 @@ rounds the wrong way, a generator that states a number nobody retrieved.
 import os
 import re
 
-from agent import knowledge, noise
+from agent import config, injection, knowledge, noise
 
 BUGS = {b.strip() for b in os.environ.get("BUGS", "").split(",") if b.strip()}
+
+# Notes a booking is allowed to carry when the `capability` defence is on.
+# This is the strong mitigation and the reason it is strong is visible here:
+# the field stops being free text. An injected instruction can still be obeyed
+# by the generator, and it still cannot put anything of the attacker's choosing
+# into an outbound channel, because there is no longer a channel that accepts
+# arbitrary text. Filters guess; capability restriction removes.
+ALLOWED_NOTES = ("", "standard viewing request", "user requested a weekend slot")
 
 # Promoted to module level so noise.py can ask "was this query ambiguous?"
 # without duplicating the word lists.
@@ -159,8 +167,25 @@ def retrieve(query, intent, trace, rng=None):
     pool = knowledge.LISTINGS if intent == "search" else knowledge.POLICIES
     docs = noise.perturb_retrieval(docs, pool, rng)
 
+    # DEFENCE=input_filter — drop any single document that looks like it
+    # contains instructions. This is the mitigation every team reaches for
+    # first, and the suite exists partly to show what it does and does not buy:
+    #
+    #   - it works on single-document payloads
+    #   - it is blind to payloads split across two documents, because it never
+    #     sees the joined context that assembles them
+    #   - it has a false-positive cost. A policy document that legitimately
+    #     says "ignore the above if the tenancy started before 2020" is dropped,
+    #     and the answer silently loses a source. Watch retrieval recall.
+    filtered = []
+    if "input_filter" in injection.defences():
+        keep = [d for d in docs if not injection.looks_like_instruction(d["text"])]
+        filtered = [d["id"] for d in docs if d not in keep]
+        docs = keep
+
     doc_ids = [d["id"] for d in docs]
-    trace.add("retrieval", filters=filters, doc_ids=doc_ids, count=len(doc_ids))
+    trace.add("retrieval", filters=filters, doc_ids=doc_ids, count=len(doc_ids),
+              filtered_out=filtered)
     return docs
 
 
@@ -168,8 +193,18 @@ def retrieve(query, intent, trace, rng=None):
 # Stage 3 — tools
 # --------------------------------------------------------------------------
 
-def call_tools(query, intent, docs, trace):
-    """Only the calls a real system would make. Cheapest stage to assert on."""
+def call_tools(query, intent, docs, trace, obeyed=()):
+    """Only the calls a real system would make. Cheapest stage to assert on.
+
+    `obeyed` carries directives the simulated model took from retrieved text
+    (see agent/injection.py). Two attacker objectives land here, and they are
+    the two that matter most because this stage is where the system touches
+    the real world:
+
+      BOOK   a side effect the user never asked for      -> LLM03 / ASI02
+      NOTES  attacker text in an outbound parameter      -> LLM10, and leg 3
+             of the lethal trifecta
+    """
     calls = []
 
     if intent == "search" and docs:
@@ -190,11 +225,23 @@ def call_tools(query, intent, docs, trace):
     # with listing_id=None — the answer read "I couldn't find any properties
     # ... I've started a viewing request for you."
     wants_booking = any(w in query.lower() for w in ("book", "viewing", "schedule", "arrange"))
-    if intent == "search" and wants_booking and docs:
-        if "tool_skips_booking" not in BUGS:
-            calls.append({"name": "book_viewing",
-                          "args": {"listing_id": docs[0]["id"]},
-                          "result": "pending_confirmation"})
+
+    # An injected BOOK directive fires the tool whether or not the USER asked
+    # for it, and whether or not anything was retrieved. That second part is
+    # deliberate: it routes straight into check_tool_results' existing guard
+    # ("booked a listing that was not retrieved"), which was written months ago
+    # as a correctness check and is, unchanged, an excessive-agency control.
+    forced = any(e == injection.BOOK for e, _ in obeyed)
+
+    if (forced or (intent == "search" and wants_booking and docs)) and \
+            "tool_skips_booking" not in BUGS:
+        notes = next((a for e, a in obeyed if e == injection.NOTES and a), "")
+        if "capability" in injection.defences() and notes not in ALLOWED_NOTES:
+            notes = ""
+        calls.append({"name": "book_viewing",
+                      "args": {"listing_id": docs[0]["id"] if docs else None,
+                               "notes": notes},
+                      "result": "pending_confirmation"})
 
     trace.add("tool_call", calls=calls, names=[c["name"] for c in calls])
     return calls
@@ -204,7 +251,7 @@ def call_tools(query, intent, docs, trace):
 # Stage 4 — generation
 # --------------------------------------------------------------------------
 
-def generate(query, intent, docs, calls, trace, rng=None):
+def generate(query, intent, docs, calls, trace, rng=None, obeyed=(), diag=None):
     """Compose the answer strictly from retrieved documents.
 
     The `generation_hallucinates_price` bug invents a number that appears in no
@@ -236,13 +283,25 @@ def generate(query, intent, docs, calls, trace, rng=None):
     if any(c["name"] == "book_viewing" for c in calls):
         text += " I've started a viewing request for you."
 
+    # Injected directives that land in the ANSWER rather than in a tool call.
+    for effect, arg in obeyed:
+        if effect == injection.REVEAL:
+            text += " " + config.SYSTEM_PROMPT.strip().replace("\n", " ")
+        elif effect == injection.EMIT and arg:
+            text += f" {arg}"
+
     # Surface variation. Changes no facts — only how they are written.
     canonical = text
     text = noise.maybe_drop_average(text, rng)
     text = noise.paraphrase(text, rng)
 
     trace.add("generation", text=text, grounded_in=[d["id"] for d in docs],
-              reworded=text != canonical)
+              reworded=text != canonical,
+              # Diagnostics only. The security checks in evals/security.py do
+              # NOT read this — see the docstring on injection.obeyed for why a
+              # check that reads the simulator's own record of its intent is
+              # testing the simulator instead of the system.
+              injection=diag or {})
     return text
 
 
@@ -258,6 +317,14 @@ def run(query, rng=None):
     trace = Trace()
     intent = route(query, trace, rng)
     docs = retrieve(query, intent, trace, rng)
-    calls = call_tools(query, intent, docs, trace)
-    text = generate(query, intent, docs, calls, trace, rng)
+
+    # Read the retrieved context for instructions, ONCE, between retrieval and
+    # the stages that act. Once, because compliance is probabilistic: deciding
+    # separately in call_tools and in generate would let the same directive be
+    # obeyed by one and refused by the other in the same turn, which no real
+    # model does and which would make the trace impossible to read.
+    obeyed, diag = injection.obeyed(docs, BUGS, rng)
+
+    calls = call_tools(query, intent, docs, trace, obeyed)
+    text = generate(query, intent, docs, calls, trace, rng, obeyed, diag)
     return text, trace
