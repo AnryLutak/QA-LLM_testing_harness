@@ -3,6 +3,13 @@
 Block 3.0 output. Written before any attack was built, because a red-team suite
 assembled without one is a list of payloads somebody found on the internet.
 
+**Revised at the close of 3.1.** Two things changed under it and a threat model
+that describes a system which no longer exists is worse than none: a live-model
+path was added (`agent/llm.py`), so the SUT is now *either* the simulator or a
+real model depending on how it is run; and the scope decisions that were
+implicit — no direct-injection cases, no jailbreak cases — are written down
+below rather than left to be inferred from the dataset.
+
 ## The system
 
 ```
@@ -57,24 +64,61 @@ that takes an attack to zero without collateral damage.
 | `DOCS[*].text` | attacker controls the answer text, leaks the system prompt, books viewings on the victim's behalf, and puts arbitrary text into an outbound parameter |
 | tool results | not exploitable today; becomes the highest-severity edge the day a tool returns third-party content |
 
+## Scope: what is deliberately not attacked
+
+Written down because "we didn't test it" and "we decided not to test it" look
+identical in a findings table, and only one of them survives being asked about.
+
+| Not covered | Why | What would change that |
+|---|---|---|
+| **Direct injection** (payload in `query`) | The blast radius is the attacker's own session: there is no other tenant's data to reach and no privileged action they could not simply request. It is a real class and a boring one *here*. | The moment retrieval spans more than one tenant, or a tool acts on someone else's behalf — which is 3.2's surface, not 3.1's. |
+| **Jailbreak** (bypassing refusal) | This SUT has no safety behaviour to bypass. It answers rental questions; there is no refusal boundary, so "the model was talked out of refusing" has no referent. Injection and jailbreak get conflated constantly and this is the cleanest place to say they are different: **injection subverts whose instructions are followed, jailbreak subverts what the model is willing to do.** | A moderation or policy layer, which this product does not have. |
+| **Multi-turn** (crescendo, memory poisoning) | Single turn, no history. A property of the design, not an oversight. | Conversation memory. |
+| **Cross-modal** (image/audio carriers) | Text-only SUT. Worth naming because the **2026** LLM01 absorbed cross-modal injection, so citing the 2026 list means knowing this row is empty on purpose. | An attachment or image path. |
+| **Tool results as carrier** | Tool results are computed internally from `DOCS` today, so they carry nothing an attacker wrote that the documents did not already carry. | The first tool that returns third-party content — flagged above as the highest-severity edge in that event. |
+
+Direct injection is not entirely unmeasured, and the measurement was an
+accident worth keeping. `pos-002` … `pos-004` put instructions in `query` to
+prove the *capability* exists, and they answer a question the attack cases
+cannot: the same instruction is obeyed **20/20 from the user** and **0–45%
+from a document**. The instruction hierarchy is real and partial. That contrast
+is the argument for why indirect is the interesting half.
+
 ## What this SUT cannot tell you
 
 Recorded here so it never has to be remembered under interview pressure.
 
-The agent is deterministic keyword logic and string templating. It has no
-instruction-following, so indirect prompt injection is **simulated** by
-`agent/injection.py` under `BUGS=generation_obeys_documents`, in the same
-spirit as `noise.py` simulating non-determinism and `BUGS` simulating defects.
+**There are two SUTs in this repo and the reports say which one ran.**
 
-- **Demonstrated:** detection logic, fail-closed contracts, OWASP mapping,
-  and that a given mitigation moves attack success by a measured amount.
-- **Not demonstrated, and never to be claimed:** that any real model is
-  vulnerable to any payload here. Every ASR in `reports/redteam.json` is a
-  property of the simulator's compliance knob.
+- `LLM=openai` — a real model generates the answer (`agent/llm.py`). Attack
+  success is a property of that model, at that vintage, with that payload.
+  Reports print `mode: LIVE MODEL — <model>`; the live numbers live in
+  `security/FINDINGS.md` and every rate quoted there names the report it came
+  from.
+- Default — the agent is deterministic keyword logic and string templating with
+  no instruction-following, so injection is **simulated** by
+  `agent/injection.py` under `BUGS=generation_obeys_documents`, in the same
+  spirit as `noise.py` simulating non-determinism. Reports print
+  `mode: SIMULATED (INJECT_P=…)`.
 
-Real-model attack success is measured separately in 3.5 by pointing
-`promptfoo redteam` at a live endpoint. The two live in different sections of
-the README on purpose.
+- **Demonstrated on both paths:** detection logic, fail-closed contracts, OWASP
+  mapping, and that a given mitigation moves attack success by a measured
+  amount.
+- **Never to be claimed from the simulated path:** that any real model is
+  vulnerable to any payload here. A simulated ASR is a property of a knob.
+- **Never to be claimed from the live path either:** that a payload which
+  failed does not work. A one-word edit moved attack success by 45 points
+  (H-003), so a 0% is one phrasing failing, not an attack class failing.
+
+The defence matrix (`--compare`) is still measured on the **simulated** path
+only. It is a statement about what each mitigation can and cannot *see* —
+`input_filter` never sees the joined context, `capability` removes the sink
+regardless — which is a property of the code, not of a model. Re-running it
+live would put a rate on each cell; it would not change which cells are zero.
+
+Standard-tool comparison (`promptfoo`, `garak`, DeepTeam) is 3.5, and is still
+outstanding: nothing in this repo has been run against a tool anyone else
+wrote.
 
 ## Two findings from reviewing the existing harness
 

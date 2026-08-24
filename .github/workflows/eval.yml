@@ -39,6 +39,31 @@ jobs:
             echo "detected: $bug"
           done
 
+      # The red team runs here on the SIMULATED path, and what it gates is not
+      # the same thing the eval suite gates.
+      #
+      # Its own rule is "any success fails the build", so on a corpus with 15
+      # seeded injections and the compliance knob switched on it exits non-zero
+      # BY CONSTRUCTION. Inverting the check turns that into the question CI can
+      # actually answer without an API key: can the suite still see? A red-team
+      # runner that quietly stopped detecting its own payloads would report a
+      # clean build, and a false all-clear with a timestamp on it is the worst
+      # artifact in this repo.
+      #
+      # The real security gate needs a live model and a key, so it is a manual
+      # or nightly run against reports/ — not a PR gate. Deterministic security
+      # REGRESSIONS are covered in tests/test_security.py, which does gate.
+      - name: Verify the red-team suite still detects its own injections
+        run: |
+          set -e
+          if python -m evals.redteam --runs 10 --seed ci \
+               --json reports/redteam-ci.json > /tmp/redteam.txt 2>&1; then
+            echo "::error::red-team suite found NOTHING against a seeded corpus"
+            cat /tmp/redteam.txt
+            exit 1
+          fi
+          grep -E "VULNERABILITIES FOUND|CONTROLS" -A2 /tmp/redteam.txt
+
       - name: Harness unit tests
         run: python -m pytest tests/ -v
 

@@ -131,6 +131,28 @@ def bootstrap_case_ci(per_case_rates, runs=1, iters=4000, seed="case-ci"):
     it should be: 26 cases is a small sample of "things a user might ask".
 
     Seeded, so the report is reproducible run to run.
+
+    A PERCENTILE BOOTSTRAP COLLAPSES AT THE BOUNDARY, AND THE BOUNDARY IS THE
+    CASE YOU ARE USUALLY IN.
+    -------------------------------------------------------------------------
+    Resampling carries no information when the thing being resampled has no
+    variance. At 26/26 every case rate is 1.0, so every resample is 1.0, and
+    this returned [100%, 100%] — "we are certain this system never fails", from
+    26 observations, printed under the heading that tells the reader it is the
+    number they should care about.
+
+    That is precisely the failure `wilson` exists in this file to avoid, three
+    functions up, reintroduced by a different method. The naive normal
+    approximation and a percentile bootstrap fail in the same place for the same
+    reason: an estimator with zero observed spread reports zero uncertainty.
+    A green suite is exactly where it happens, so it is never noticed.
+
+    So the reported interval is the WIDER of the two on each side. Where the
+    resample distribution is informative the bootstrap dominates and nothing
+    changes; where it degenerates, Wilson over the case-level successes supplies
+    the interval a proportion at the boundary actually has. It also keeps the
+    result monotone — without it, 25/26 printed a NARROWER interval than 26/26,
+    which no reader would forgive.
     """
     n = len(per_case_rates)
     if n < 2:
@@ -150,7 +172,12 @@ def bootstrap_case_ci(per_case_rates, runs=1, iters=4000, seed="case-ci"):
             total += p
         means.append(total / n)
     means.sort()
-    return means[int(0.025 * iters)], means[int(0.975 * iters)]
+    lo, hi = means[int(0.025 * iters)], means[int(0.975 * iters)]
+
+    # n is the CASE count, not the observation count — the whole point of this
+    # function. Wilson takes a fractional numerator without complaint.
+    w_lo, w_hi = wilson(sum(per_case_rates), n)
+    return min(lo, w_lo), max(hi, w_hi)
 
 
 def run_once(case, j, seed, run_index):
@@ -353,7 +380,7 @@ def print_report(rows, summary):
     w(f"                   \"will CI print roughly this again tomorrow?\"  "
       f"-> narrows with --runs\n")
     w(f"  generalisation   95% CI [{clo:.1%}, {chi:.1%}]   "
-      f"(n={summary['cases']} cases, bootstrap)\n")
+      f"(n={summary['cases']} cases, bootstrap/Wilson)\n")
     w(f"                   \"how well does this handle queries in general?\"  "
       f"-> narrows ONLY with more cases\n")
     w("  Quoting the first while meaning the second is the easiest mistake\n"
@@ -492,7 +519,14 @@ def main():
               f"-> {'PASS' if ok else 'FAIL'}")
         return 0 if ok else 1
 
-    return 1 if (summary["stable_fail"] or summary["flaky"]) else 0
+    # VACUOUS blocks too, and the omission was not cosmetic. `--gate strict` is
+    # documented as "any non-pass fails", and a case that executed and asserted
+    # NOTHING is the one outcome that most needs to stop a build: it is not a
+    # failure, so nobody investigates it, and it is not coverage either. Letting
+    # it exit 0 is how a suite quietly stops testing while staying green — the
+    # thing the four-state model exists to prevent.
+    return 1 if (summary["stable_fail"] or summary["flaky"]
+                 or summary["vacuous"]) else 0
 
 
 if __name__ == "__main__":

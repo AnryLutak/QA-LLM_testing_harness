@@ -203,13 +203,18 @@ class OpenAIJudge:
         retry a daily quota, which would just hang.
         """
         prompt = self._prompt(case, text, trace)
-        key = CACHE.key(self.model, self.name, prompt, nonce, tag=TAG)
-        cached = CACHE.get(key)
+        cached = CACHE.get(self._key(prompt, nonce))
         if cached is not None:
             return int(cached["score"]), cached.get("reason", "")
 
         delay = 2.0
-        for attempt in range(max_retries):
+        resp = None
+        # See the identical note in agent/llm.py: the temperature probe is a
+        # discovery, not a retry, so it must not consume the budget — and a
+        # probe landing on the final iteration used to fall out of the loop with
+        # `resp` unbound.
+        attempts_left = max_retries
+        while attempts_left > 0:
             kwargs = {
                 "model": self.model,
                 "messages": [{"role": "user", "content": prompt}],
@@ -230,6 +235,7 @@ class OpenAIJudge:
                 if "temperature" in msg and self.supports_temperature:
                     self.supports_temperature = False
                     continue
+                attempts_left -= 1
                 is_rate = "429" in msg or "rate_limit" in msg
                 # A daily quota will not clear inside this run. Fail fast and
                 # loudly so the caller can report partial results instead of
@@ -238,21 +244,78 @@ class OpenAIJudge:
                     raise JudgeUnavailable(
                         f"{self.model}: daily request quota exhausted. "
                         f"Cached work is kept; re-run when it resets.") from None
-                if is_rate and attempt < max_retries - 1:
+                if is_rate and attempts_left > 0:
                     time.sleep(delay)
                     delay *= 2
                     continue
                 raise
 
+        if resp is None:
+            raise JudgeUnavailable(
+                f"{self.model}: {max_retries} attempts produced no response. "
+                f"Cached work is kept.")
+
         data = json.loads(resp.choices[0].message.content)
+        score = self._validate(data.get("score"))
+        # Written under a key recomputed from the FINAL temperature setting, not
+        # the one assumed before the call. On the first request to a model that
+        # refuses temperature, the lookup missed at `@t0` and the answer belongs
+        # at `@tdefault`; writing it back under the miss key would file a
+        # default-temperature measurement as a pinned one, and every later
+        # lookup (now correctly at `@tdefault`) would miss it forever.
+        #
         # Store the model and a timestamp alongside the verdict. Without them
         # a cache entry cannot tell you WHEN or by WHAT it was produced, and a
         # report built from it cannot disclose its own vintage.
-        CACHE.set(key, {"score": int(data["score"]),
-                        "reason": data.get("reason", ""),
-                        "model": self.model,
-                        "ts": time.time()})
-        return int(data["score"]), data.get("reason", "")
+        CACHE.set(self._key(prompt, nonce), {"score": score,
+                                             "reason": data.get("reason", ""),
+                                             "model": self.model,
+                                             "ts": time.time()})
+        return score, data.get("reason", "")
+
+    def _key(self, prompt, nonce):
+        """Cache key, WITH the temperature actually in force.
+
+        agent/llm.py states the rule and this file broke it: any parameter that
+        can change the response is part of the identity of the response. A judge
+        pinned to 0 and the same judge running at the model's default are two
+        different measurements, and they were sharing a cache entry — so a
+        report could serve a pinned score for an unpinned run, or the reverse,
+        with nothing on the page to say so.
+
+        temperature=0 encodes as the bare judge name rather than as `@t0`. That
+        is not a special case for its own sake: every entry already on disk was
+        written by the pinned path, so this keeps 600-odd paid-for results valid
+        while giving the unpinned measurement — the one that was being filed
+        under the wrong identity — a namespace of its own. Invalidating a cache
+        to fix a labelling bug would have made the fix cost real money, which is
+        how a correct fix gets postponed.
+        """
+        name = self.name if self.supports_temperature else f"{self.name}@tdefault"
+        return CACHE.key(self.model, name, prompt, nonce, tag=TAG)
+
+    def _validate(self, raw):
+        """A score off the 1-5 scale is a protocol violation, not a datum.
+
+        Left unchecked it survives all the way into calibration.kappa(), which
+        indexes a confusion matrix by score and dies with a bare KeyError naming
+        nothing — three modules and one long API run away from the judge that
+        actually misbehaved. Refuse it here, where the model that produced it
+        can be named, and do not cache it.
+        """
+        try:
+            score = int(raw)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"{self.name} ({self.model}) returned a non-numeric score "
+                f"{raw!r}; the rubric asks for an integer 1-5") from None
+        if not 1 <= score <= 5:
+            raise ValueError(
+                f"{self.name} ({self.model}) returned {score}, outside the 1-5 "
+                f"scale in evals/rubric.py. Not cached — fix the prompt or the "
+                f"model, do not clamp, because a clamped score is a fabricated "
+                f"measurement.")
+        return score
 
 
 # Name -> factory. calibration.py instantiates several and compares them.

@@ -25,6 +25,7 @@ from repeat j. Resuming is safe; the variance measurement survives.
 import hashlib
 import json
 import os
+import threading
 import time
 
 DEFAULT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -39,6 +40,10 @@ class Cache:
         self.hits = 0
         self.misses = 0
         self.hit_ages = []          # vintages of served entries, for the report
+        # Judge calls run concurrently (see --workers). Every mutation of the
+        # dict and every write of the file goes through this lock; without it
+        # two threads flushing at once can interleave and truncate the file.
+        self._lock = threading.Lock()
         if enabled and os.path.exists(path):
             try:
                 with open(path, encoding="utf-8") as f:
@@ -67,7 +72,8 @@ class Cache:
     def get(self, k):
         if not self.enabled:
             return None
-        hit = self.data.get(k)
+        with self._lock:
+            hit = self.data.get(k)
         if hit is None:
             self.misses += 1
         else:
@@ -79,10 +85,15 @@ class Cache:
     def set(self, k, value):
         if not self.enabled:
             return
-        self.data[k] = value
-        self.flush()                    # write through: a crash loses nothing
+        with self._lock:
+            self.data[k] = value
+            self._flush_locked()        # write through: a crash loses nothing
 
     def flush(self):
+        with self._lock:
+            self._flush_locked()
+
+    def _flush_locked(self):
         if not self.enabled:
             return
         tmp = self.path + ".tmp"

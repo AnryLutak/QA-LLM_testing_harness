@@ -18,6 +18,11 @@ flaky-baseline*.txt
 # prompt sent — not something to publish.
 evals/.judge_cache.json
 
+# Generation cache for the live-model path. Same reasoning, and one more:
+# these entries contain the injected corpus verbatim, so publishing them
+# publishes a working payload set next to the model that fell for it.
+evals/.llm_cache.json
+
 # Personal learning notes, not part of the harness.
 my-experience.md
 

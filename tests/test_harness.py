@@ -198,6 +198,83 @@ def test_checks_return_na_rather_than_passing_vacuously():
     assert r.status is Status.NA, "no figures quoted is not a grounded answer"
 
 
+def test_confirmed_forbidden_hit_is_not_hidden_behind_a_parse_error():
+    """A known violation must not be re-filed as a harness defect.
+
+    Both ERROR and FAIL block the build, so this never went green — it went to
+    the wrong engineer. ERROR reads 'fix your parser'; the answer had already
+    been caught saying a forbidden thing.
+    """
+    from evals import assertions
+    from evals.assertions import Status
+
+    # "1.4k EUR" is money-shaped and deliberately unparseable, so the amount
+    # arm cannot conclude. The string arm already has.
+    r = assertions.check_forbidden(
+        "I've started a viewing request for you. Others from 1.4k EUR.",
+        forbidden=["viewing request"], forbidden_amounts=[400])
+    assert r.status is Status.FAIL, r.detail
+    assert "viewing request" in r.detail
+    assert "1.4k EUR" in r.detail, "the unread amount must stay visible"
+
+    # ...and with nothing confirmed, unreadable money still fails closed.
+    r = assertions.check_forbidden("Others from 1.4k EUR.",
+                                   forbidden=["viewing request"],
+                                   forbidden_amounts=[400])
+    assert r.status is Status.ERROR, r.detail
+
+
+def _bare_judge(name="openai-anchored", model="gpt-4o-mini", pinned=True):
+    """An OpenAIJudge with no client. __init__ imports openai, which CI does not
+    install — and none of the key/validation logic needs a network."""
+    from evals.judge import OpenAIJudge
+    j = object.__new__(OpenAIJudge)
+    j.name, j.model, j.supports_temperature = name, model, pinned
+    return j
+
+
+def test_judge_cache_key_carries_the_temperature_actually_used():
+    """agent/llm.py states the rule; judge.py was breaking it.
+
+    Any parameter that can change the response is part of the identity of the
+    response. A judge pinned to 0 and the same judge at the model's default were
+    sharing one cache entry, so a report could serve a pinned score for an
+    unpinned run with nothing on the page to say so.
+    """
+    from evals.cache import Cache
+    from evals.judge import TAG
+
+    pinned, unpinned = _bare_judge(pinned=True), _bare_judge(pinned=False)
+    assert pinned._key("P", 0) != unpinned._key("P", 0)
+
+    # ...without invalidating what is already on disk. Every existing entry was
+    # written by the pinned path, so temperature=0 must keep encoding as the
+    # bare judge name. A correct fix that costs 600 paid API calls is a correct
+    # fix that gets postponed.
+    assert pinned._key("P", 0) == Cache.key(
+        "gpt-4o-mini", "openai-anchored", "P", 0, tag=TAG)
+
+
+def test_judge_refuses_off_scale_scores_rather_than_clamping():
+    """A clamped score is a fabricated measurement."""
+    import pytest as _pytest
+    j = _bare_judge()
+    assert j._validate(4) == 4 and j._validate("5") == 5
+    for bad in (0, 6, None, "high"):
+        with _pytest.raises(ValueError):
+            j._validate(bad)
+
+
+def test_kappa_rejects_off_scale_scores_by_name():
+    """`KeyError: 6` names neither the rater nor the item."""
+    import pytest as _pytest
+    from evals.calibration import kappa
+
+    with _pytest.raises(ValueError, match="not on the"):
+        kappa([1, 2, 6], [1, 2, 3])
+    assert kappa([1, 2, 3], [1, 2, 3]) == 1.0
+
+
 def test_attribution_ignores_na():
     """An N/A check has no stage to blame — it must not enter attribution."""
     from evals.runner import attribute
@@ -233,6 +310,87 @@ def test_all_na_is_vacuous_not_pass():
         Result("intent", "routing", Status.PASS),
         Result("grounding", "generation", Status.NA),
     ]) == "pass", "one real check evaluating is enough to be a pass"
+
+
+def test_undeclared_expectations_are_na_not_vacuous_passes():
+    """`.get(key, [])` cannot tell 'declares nothing' from 'declares empty'.
+
+    An empty expectation compared against an empty result is an 'exact match',
+    so a case that never stated a retrieval expectation PASSED its retrieval
+    check. Same for tools. The checks were right; the arguments were fail-open.
+    """
+    from agent import agent
+    from evals import assertions
+    from evals.assertions import Status
+
+    _, trace = agent.run("Hello")
+
+    assert assertions.check_retrieval(trace, None).status is Status.NA
+    assert assertions.check_tools(trace, None).status is Status.NA
+    assert assertions.check_intent(trace, None).status is Status.NA
+
+    # ...and declared-empty still asserts. This is the half that must not break:
+    # several chitchat cases genuinely require that nothing is retrieved.
+    assert assertions.check_retrieval(trace, []).status is Status.PASS
+    assert assertions.check_tools(trace, []).status is Status.PASS
+
+
+def test_a_case_that_asserts_nothing_is_vacuous_and_fails_the_build(tmp_path):
+    """End to end, because `outcome()` returning 'vacuous' in a unit test proved
+    nothing about whether the verdict was REACHABLE.
+
+    It was not. run_all always included check_intent, which returns PASS or FAIL
+    and never N/A, so no case could ever be all-N/A and the report printed
+    `VACUOUS: 0` on every run of its life. A verdict that cannot occur is
+    indistinguishable from a verdict that never occurs, and the second one reads
+    as an invariant being upheld.
+    """
+    import json
+    dataset = tmp_path / "vacuous.json"
+    dataset.write_text(json.dumps({"cases": [{
+        "id": "vac-001",
+        "group": "vacuous",
+        "query": "Hello",
+        # Deliberately declares no intent, no doc_ids, no tools, no forbidden
+        # content. A chitchat answer quotes no figures and calls no tools, so
+        # every one of the six checks has nothing to look at.
+        "expect": {"rubric": "greets the user", "judge_keywords": ["help"]},
+    }]}))
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "evals.runner", "--dataset", str(dataset)],
+        cwd=ROOT, env=dict(os.environ, BUGS=""), capture_output=True, text=True)
+
+    assert "VACUOUS: 1" in proc.stdout, proc.stdout
+    assert proc.returncode == 1, (
+        "a case that executed and asserted nothing must not exit 0:\n" + proc.stdout)
+
+
+def test_generalisation_interval_is_not_degenerate_when_everything_passes():
+    """The all-green run is where a percentile bootstrap silently collapses.
+
+    Every case rate is 1.0, so every resample is 1.0, so the interval was
+    [100%, 100%] — the same 'certain from 26 observations' claim that wilson()
+    exists in this file to refuse, arriving by a different route and printed
+    under the heading the report tells you to trust.
+    """
+    from evals.runner import bootstrap_case_ci
+
+    lo, hi = bootstrap_case_ci([1.0] * 26, runs=1)
+    assert hi == 1.0
+    assert lo < 0.95, f"26/26 must not imply near-certainty, got [{lo}, {hi}]"
+
+    lo0, hi0 = bootstrap_case_ci([0.0] * 26, runs=1)
+    assert lo0 == 0.0
+    assert hi0 > 0.05, f"0/26 must not rule out failure, got [{lo0}, {hi0}]"
+
+    # Monotone: losing a case must never NARROW the interval. It did — 25/26
+    # reported [88.5%, 100%] against 26/26's [100%, 100%] — and a report where
+    # a regression buys confidence is worse than one with no interval at all.
+    widths = [hi - lo for lo, hi in
+              (bootstrap_case_ci([1.0] * (26 - k) + [0.0] * k, runs=1)
+               for k in range(4))]
+    assert widths == sorted(widths), f"interval must widen as cases fail: {widths}"
 
 
 def test_na_counts_are_reported_per_check():

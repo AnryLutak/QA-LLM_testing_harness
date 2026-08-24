@@ -41,7 +41,33 @@ class Result:
     detail: str = ""
     meta: dict = field(default_factory=dict)
 
+# DECLARED-EMPTY IS NOT UNDECLARED, AND `.get(key, [])` CANNOT TELL THEM APART.
+#
+# `expect.doc_ids: []` says "this query must retrieve nothing" — a real
+# assertion, and one several chitchat cases depend on. A missing `doc_ids` key
+# says the dataset never stated an expectation. Collapsing both to `[]` made the
+# second one PASS: an empty expectation compared against an empty result is an
+# "exact match".
+#
+# That is the fail-open bug this module was rewritten to eliminate, surviving in
+# the one place nobody looked — the arguments, not the checks. It also made
+# VACUOUS unreachable: check_intent could never return N/A, so `outcome()` could
+# never see an all-N/A case and the report printed `VACUOUS: 0` unconditionally.
+# A verdict that cannot occur reads exactly like a verdict that never occurs.
+#
+# So: None means undeclared and yields N/A. Every check below takes its
+# expectation as `exp.get(key)` with no default — see run_all.
+def _undeclared(name, stage, key):
+    return Result(
+        name=name, stage=stage, status=Status.NA,
+        detail=f"dataset declares no {key!r} for this case — nothing to check",
+        meta={},
+    )
+
+
 def check_intent(trace, expected):
+    if expected is None:
+        return _undeclared("intent", "routing", "intent")
     got = (trace.get("routing") or {}).get("intent")
     return Result(
         name="intent", stage="routing", status=Status.PASS if got == expected else Status.FAIL,
@@ -58,6 +84,8 @@ def check_retrieval(trace, expected_ids):
     filter or an embedding problem, the second is usually a threshold that is
     too loose. Collapsing them into one pass/fail hides which one you have.
     """
+    if expected_ids is None:
+        return _undeclared("retrieval", "retrieval", "doc_ids")
     got = (trace.get("retrieval") or {}).get("doc_ids", [])
     exp_set, got_set = set(expected_ids), set(got)
 
@@ -86,6 +114,8 @@ def check_retrieval(trace, expected_ids):
 
 
 def check_tools(trace, expected_names):
+    if expected_names is None:
+        return _undeclared("tool_calls", "tool_call", "tools")
     got = (trace.get("tool_call") or {}).get("names", [])
     exp_set, got_set = set(expected_names), set(got)
     missing = sorted(exp_set - got_set)
@@ -142,26 +172,50 @@ def check_forbidden(text, forbidden=None, forbidden_amounts=None):
         if _re.search(pattern, text, _re.IGNORECASE):
             hits.append(f)
 
-    amount_hits = []
+    amount_hits, unparseable = [], []
     if forbidden_amounts:
         money = money_mentions(text)
-        # Fail closed, exactly as check_grounding does. If the answer contains
-        # money we cannot read, we cannot claim the forbidden amount is absent.
-        if money.unparseable:
-            return Result(
-                name="forbidden_content", stage="generation", status=Status.ERROR,
-                detail=f"cannot parse money, so cannot rule out {sorted(forbidden_amounts)}: "
-                       f"{money.unparseable}",
-                meta={"unparseable": money.unparseable},
-            )
+        unparseable = money.unparseable
         amount_hits = sorted(forbidden_amounts & money.values)
 
-    found = bool(hits or amount_hits)
+    # A CONFIRMED VIOLATION OUTRANKS AN INCONCLUSIVE ONE.
+    #
+    # This used to return ERROR the moment any money was unreadable, before
+    # looking at `hits` — so a forbidden STRING that had already been found in
+    # the answer was thrown away and the observation was filed as a harness
+    # defect. Both block the build, so nothing went green; what went wrong is
+    # attribution. ERROR says "go fix your parser", FAIL says "the agent said
+    # something it must not", and printing the first when the second is known
+    # sends someone to the wrong repository with the wrong ticket.
+    #
+    # So: report the violation, and carry the unread amounts in the detail so
+    # the coverage gap is still visible rather than swallowed.
+    if hits or amount_hits:
+        detail = f"found {hits + amount_hits}"
+        if unparseable:
+            detail += (f"; additionally could not parse {unparseable}, so "
+                       f"{sorted(forbidden_amounts)} is not fully ruled out")
+        return Result(
+            name="forbidden_content", stage="generation", status=Status.FAIL,
+            detail=detail,
+            meta={"hits": hits, "amount_hits": amount_hits,
+                  "unparseable": unparseable},
+        )
+
+    # Nothing confirmed, and money we cannot read. Fail closed, exactly as
+    # check_grounding does: we cannot claim the forbidden amount is absent.
+    if unparseable:
+        return Result(
+            name="forbidden_content", stage="generation", status=Status.ERROR,
+            detail=f"cannot parse money, so cannot rule out {sorted(forbidden_amounts)}: "
+                   f"{unparseable}",
+            meta={"hits": hits, "amount_hits": [], "unparseable": unparseable},
+        )
+
     return Result(
-        name="forbidden_content", stage="generation",
-        status=Status.FAIL if found else Status.PASS,
-        detail=(f"found {hits + amount_hits}" if found else "none present"),
-        meta={"hits": hits, "amount_hits": amount_hits},
+        name="forbidden_content", stage="generation", status=Status.PASS,
+        detail="none present",
+        meta={"hits": [], "amount_hits": [], "unparseable": []},
     )
 
 
@@ -277,10 +331,13 @@ def check_tool_results(trace):
 
 def run_all(case, text, trace):
     exp = case["expect"]
+    # No defaults. `.get(key)` returns None for an expectation the dataset never
+    # stated, and each check turns that into N/A instead of a vacuous pass —
+    # see the note above _undeclared.
     results = [
-        check_intent(trace, exp["intent"]),
-        check_retrieval(trace, exp.get("doc_ids", [])),
-        check_tools(trace, exp.get("tools", [])),
+        check_intent(trace, exp.get("intent")),
+        check_retrieval(trace, exp.get("doc_ids")),
+        check_tools(trace, exp.get("tools")),
         check_tool_results(trace),
         check_forbidden(text,
                         exp.get("must_not_contain"),

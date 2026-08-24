@@ -55,6 +55,46 @@ POLICIES = [
      "text": "Viewings can be cancelled free of charge up to 24 hours before the appointment."},
 ]
 
+# --------------------------------------------------------------------------
+# What the model actually sees
+# --------------------------------------------------------------------------
+#
+# A document is not its `text` field. Real RAG pipelines put the id, the source
+# filename, the section header and the metadata into the context window right
+# next to the prose, and the model reads all of it. That is why filenames are a
+# known injection vector: nobody thinks of a filename as untrusted input.
+#
+# This function is the ONE definition of that surface, and it exists because
+# having two was a live defect. agent/llm.py rendered id + metadata + text for
+# the real model, while agent/injection.py parsed directives out of `text`
+# alone. An attack carried in a document id (inj-006) was therefore deliverable
+# to a real model and structurally impossible against the simulator — which
+# reported it as 0% attack success, indistinguishable from resistance.
+#
+# Note what is deliberately NOT changed by this: `input_filter` still scans
+# `text` only (see agent/agent.py). That gap is realistic and is the finding —
+# the filter reads less than the model does. The bug was the SIMULATED model
+# reading less than the real one.
+MODEL_VISIBLE_META = ("city", "beds", "price", "topic")
+
+
+def render_meta(doc):
+    """The id-and-metadata header alone.
+
+    Separable from the prose because the two behave differently as attack
+    surfaces. A header is a short field with its own boundaries; prose from
+    several documents runs together into one flat window. agent/injection.py
+    relies on that distinction — see the two-surface note there.
+    """
+    meta = " ".join(f"{k}={doc[k]}" for k in MODEL_VISIBLE_META if k in doc)
+    return f"[{doc['id']}] {meta}".rstrip()
+
+
+def render(doc):
+    """One document as it reaches a context window: header, then prose."""
+    return f"{render_meta(doc)}\n{doc.get('text', '')}"
+
+
 def _apply_overlay():
     """Add or patch documents from a JSON file named by CORPUS_OVERLAY.
 
@@ -87,6 +127,15 @@ def _apply_overlay():
     added = []
     for key, target in (("listings", LISTINGS), ("policies", POLICIES)):
         for doc in overlay.get(key, []):
+            # Loudly, not with a KeyError from three frames down. An entry with
+            # no id is a malformed document, and the tempting alternative —
+            # skipping it — would silently drop an attack payload and report
+            # the resulting zero as a mitigated attack.
+            if "id" not in doc:
+                raise ValueError(
+                    f"overlay {key}[] entry has no 'id': {str(doc)[:80]}. "
+                    "Notes belong at the top level of the file, not in the "
+                    "document arrays.")
             existing = next((d for d in target if d["id"] == doc["id"]), None)
             if existing:
                 existing.update(doc)

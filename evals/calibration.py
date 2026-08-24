@@ -48,6 +48,7 @@ the disagreements are concentrated at the extremes.
 
 import argparse
 import json
+from concurrent.futures import ThreadPoolExecutor
 import os
 import sys
 
@@ -75,8 +76,20 @@ def kappa(a, b, weighted=False, categories=(1, 2, 3, 4, 5)):
     idx = {c: i for i, c in enumerate(categories)}
     k = len(categories)
 
+    # Name the offending value. Indexing straight into `idx` raised a bare
+    # KeyError three modules and one long API run away from whatever produced
+    # the off-scale score, and "KeyError: 6" does not tell you which rater,
+    # which item, or which of the two lists it came from. OpenAIJudge validates
+    # its own output now; this is the backstop for labels.json and for any
+    # future score source that has not learned to.
     observed = [[0] * k for _ in range(k)]
     for x, y in zip(a, b):
+        if x not in idx or y not in idx:
+            bad = x if x not in idx else y
+            raise ValueError(
+                f"score {bad!r} is not on the {list(categories)} scale defined "
+                f"in evals/rubric.py. A rater that scores off-scale has not been "
+                f"calibrated, it has been mis-parsed.")
         observed[idx[x]][idx[y]] += 1
 
     row = [sum(observed[i]) / n for i in range(k)]
@@ -156,22 +169,50 @@ def validate_reference(items, cases):
     return {b["id"] for b in broken}, broken
 
 
-def score_all(judge, items, order, cases, traces, repeat=1):
-    """Score every item `repeat` times. Returns (medians, self_consistency)."""
-    per_item, stable = [], 0
-    for lid in order:
+def score_all(judge, items, order, cases, traces, repeat=1, workers=1):
+    """Score every item `repeat` times. Returns (medians, self_consistency).
+
+    CONCURRENCY. Every unit of work here is independent — item i repeat j does
+    not depend on anything else — and each one is almost entirely spent waiting
+    on a network round trip. Run sequentially, 324 calls at ~1.5s each is about
+    eight minutes with the CPU idle throughout. There was never a throttle to
+    remove; the cost was the queue.
+
+    Ordering is preserved by indexing results rather than appending, so a
+    parallel run and a sequential run produce byte-identical reports.
+
+    nonce=j keeps each repeat cached separately. Cache on the prompt alone and
+    repeats 2..N are served from repeat 1, so self-consistency reads 100% by
+    construction — a property of the cache reported as a property of the model.
+    """
+    tasks = [(idx, lid, j) for idx, lid in enumerate(order) for j in range(repeat)]
+
+    def one(task):
+        idx, lid, j = task
         it = items[lid]
-        # Score once, use the results twice. The first version of this function
-        # ran the loop again to compute consistency, doubling the API bill for
-        # numbers it already had.
-        #
-        # nonce=i keeps each repeat cached separately. Cache on the prompt alone
-        # and repeats 2..N are served from repeat 1, so self-consistency reads
-        # 100% by construction — a property of the cache reported as a property
-        # of the model.
-        runs = [judge.score(cases[it["case_id"]], it["answer"],
-                            traces[it["case_id"]], nonce=i)[0]
-                for i in range(repeat)]
+        score, _reason = judge.score(cases[it["case_id"]], it["answer"],
+                                     traces[it["case_id"]], nonce=j)
+        return idx, j, score
+
+    scores = {}
+    if workers > 1 and tasks:
+        # Run the first call alone. OpenAIJudge probes temperature support on
+        # its first request; letting N threads discover that simultaneously
+        # wastes N calls instead of one.
+        idx, j, sc = one(tasks[0])
+        scores[(idx, j)] = sc
+        if len(tasks) > 1:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                for idx, j, sc in pool.map(one, tasks[1:]):
+                    scores[(idx, j)] = sc
+    else:
+        for task in tasks:
+            idx, j, sc = one(task)
+            scores[(idx, j)] = sc
+
+    per_item, stable = [], 0
+    for idx in range(len(order)):
+        runs = [scores[(idx, j)] for j in range(repeat)]
         per_item.append(sorted(runs)[len(runs) // 2])          # median of repeats
         stable += len(set(runs)) == 1
     if repeat < 2:
@@ -189,6 +230,11 @@ def main():
     ap.add_argument("--repeat", type=int, default=1,
                     help="score each item N times to measure judge self-consistency")
     ap.add_argument("--yes", action="store_true", help="skip the cost confirmation")
+    ap.add_argument("--workers", type=int, default=8,
+                    help="concurrent judge requests (default 8). Each call is "
+                         "almost all network wait, so this is close to a linear "
+                         "speedup until the provider's rate limit bites. Use 1 "
+                         "to rule concurrency out when debugging.")
     ap.add_argument("--allow-partial", action="store_true",
                     help="report even if some requested judges could not run. "
                          "Off by default: a comparison missing half its "
@@ -313,7 +359,7 @@ def main():
     for name, j in ready.items():
         try:
             scores, consistency = score_all(j, items, order, cases, traces,
-                                            args.repeat)
+                                            args.repeat, workers=args.workers)
         except judge_mod.JudgeUnavailable as exc:
             # Everything already fetched is on disk. Report the gap honestly
             # and keep going: a partial comparison beats no comparison, and
