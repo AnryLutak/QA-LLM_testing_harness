@@ -4,8 +4,9 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 
-# Generated locally, cheap to regenerate, no API key needed. Committing these
-# means every run churns the diff and a stale copy eventually gets believed.
+# Simulated runs are generated locally, cheap to regenerate, and need no API
+# key. Committing those means every run churns the diff and a stale copy
+# eventually gets believed.
 reports/*
 flaky-baseline*.txt
 
@@ -13,6 +14,29 @@ flaky-baseline*.txt
 # model version on a date, and the provider moves what sits behind a model id.
 # See reports/calibration/README.md.
 !reports/calibration/
+
+# ...and except the live red-team runs, for exactly the same reason, which the
+# rule above had wrong about them: `redteam-*.json` is a live-model report. It
+# costs thousands of API calls, it measures gpt-4o-mini AS IT WAS ON A DATE,
+# and no re-run reproduces it — F-002 alone has read 25%, 25%, 40%, 40%, 50%,
+# 15% and 30.5% on the identical payload and model id.
+#
+# Excluding them broke the promise the whole findings log rests on. FINDINGS.md
+# says every live rate names a report and that report is in reports/; on any
+# machine but the one that made the run, it was not, and the seven tests that
+# would have said so SKIPPED themselves — including a strict xfail whose entire
+# job is to fail the day the thing it marks gets fixed.
+#
+# Derived rather than listed, so citing a new run cannot silently leave its
+# artifact untracked. All of reports/ compresses to about 300 KB.
+# test_every_report_findings_cites_is_present_on_disk is the enforcement.
+!reports/redteam-*.json
+
+# ...but NOT the CI smoke run. It matches the pattern above and is the one
+# redteam-*.json that the original rule was right about: simulated path, ten
+# runs, no API key, regenerated on every push. Later rules win, so this line
+# has to stay below the one it narrows.
+reports/redteam-ci.json
 
 # Judge response cache. Local, disposable, and it holds a record of every
 # prompt sent — not something to publish.

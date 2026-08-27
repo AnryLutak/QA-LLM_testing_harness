@@ -393,6 +393,124 @@ def test_generalisation_interval_is_not_degenerate_when_everything_passes():
     assert widths == sorted(widths), f"interval must widen as cases fail: {widths}"
 
 
+# --- is this N observations, or one observation counted N times? -----------
+#
+# The reproducibility interval and the per-run spread are the two headline
+# numbers on the report, and both assume `--runs N` collected N draws. On the
+# live path that assumption is a property of the CACHE KEY, so these pin the
+# key and the instrument check that shouts when it stops holding.
+
+def _one_live_case(tmp_path):
+    import json
+    dataset = tmp_path / "live.json"
+    dataset.write_text(json.dumps({"cases": [{
+        "id": "live-001",
+        "group": "search/basic",
+        "query": "What flats do you have in Seville?",
+        "expect": {"intent": "search", "rubric": "lists Seville flats",
+                   "judge_keywords": ["found"]},
+    }]}))
+    return str(dataset)
+
+
+def test_the_run_index_reaches_the_generation_cache_key(tmp_path, monkeypatch):
+    """`--runs N` on the live path must be N generations, not one served N times.
+
+    agent.run takes `attempt` precisely so run i's completion is cached apart
+    from run j's (evals/cache.py states the rule; evals/redteam.py has always
+    passed it). This runner did not, so every run of a case looked up
+    (model, prompt, attempt=0): measured at TEMP=0 with --runs 20, 520
+    "observations" from 26 model calls, reproducibility CI [85.4%, 90.9%], and
+    per-run sd 0.0% printed under "this is what CI would have printed on each
+    of those runs".
+
+    Note what the failure looks like: not a red build, a STABLER one.
+    """
+    from agent import llm
+    from evals import runner
+
+    seen = []
+
+    def fake_generate(query, docs, calls, spotlight=False, attempt=0, **kw):
+        seen.append(attempt)
+        return f"I found 1 matching properties. Answer number {attempt}."
+
+    monkeypatch.setattr(llm, "enabled", lambda: True)
+    monkeypatch.setattr(llm, "generate", fake_generate)
+
+    rows, _ = runner.run(_one_live_case(tmp_path), runs=3)
+
+    assert seen == [0, 1, 2], f"the run index never reached the model: {seen}"
+    assert rows[0]["distinct_answers"] == 3, (
+        "three runs produced fewer than three distinct answers, so the rate "
+        "computed from them is a property of the cache")
+
+
+def test_a_degenerate_run_is_shouted_about_rather_than_read_as_stability(
+        tmp_path, monkeypatch, capsys):
+    """One answer per case, repeated, must not print as a narrow interval.
+
+    evals/redteam.py has asked this question in its `uniq` column since a pinned
+    sampler made every attack rate 0% or 100%. The same failure here is quieter
+    and therefore worse: a degenerate eval run does not look broken, it looks
+    reproducible.
+    """
+    from agent import llm
+    from evals import runner
+
+    monkeypatch.setattr(llm, "enabled", lambda: True)
+    monkeypatch.setattr(llm, "generate",
+                        lambda *a, **k: "I found 1 matching properties.")
+
+    rows, name = runner.run(_one_live_case(tmp_path), runs=4)
+    summary = runner.summarise(rows, name, 4)
+
+    assert summary["degenerate_cases"] == summary["cases"]
+    assert summary["variance_expected"], \
+        "a live model with --runs>1 is a configuration that asked for variance"
+
+    runner.print_report(rows, summary)
+    out = capsys.readouterr().out
+    assert "DEGENERATE SAMPLING" in out, out[-1500:]
+    assert "1 of 1 cases varied" not in out, "the count is the wrong way round"
+
+
+def test_the_degeneracy_alarm_stays_quiet_where_TEMP_0_makes_it_expected():
+    """At TEMP=0 the agent is a lookup table and one answer per case is the
+    documented behaviour, not an alarm. A check that fires on the default
+    configuration gets muted, and a muted instrument check is worth nothing."""
+    from evals import runner
+    rows, name = runner.run(runs=2)
+    summary = runner.summarise(rows, name, 2)
+    assert summary["degenerate_cases"] == summary["cases"]
+    assert not summary["variance_expected"], \
+        "TEMP=0 with no live model did not ask for a stochastic system"
+
+
+def test_a_small_figure_is_a_grounding_failure_not_a_harness_error():
+    """`50 EUR` is not a mis-read, it is fifty euros.
+
+    evals/extract.py refused every amount under 100 as implausible, and the
+    refusal went to .unparseable — the channel that means "the harness cannot
+    read this". check_grounding then reported ERROR, sending someone to fix a
+    parser over an answer that had quoted a number no document supports. Both
+    block the build, so it never went green; it went to the wrong engineer.
+    """
+    from agent import agent
+    from evals import assertions
+    from evals.assertions import Status
+
+    _, trace = agent.run("What flats do you have in Seville?")
+    r = assertions.check_grounding("Others start from 50 EUR/month.", trace)
+    assert r.status is Status.FAIL, r.detail
+    assert 50 in r.meta["ungrounded"]
+
+    # ...and the ceiling still fails closed, because THAT refusal is a genuine
+    # "I have probably mis-grouped a separator" rather than a small number.
+    r2 = assertions.check_grounding("Others start from €12345678 a month.", trace)
+    assert r2.status is Status.ERROR, r2.detail
+
+
 def test_na_counts_are_reported_per_check():
     """Coverage loss is invisible unless something counts it."""
     from evals import runner

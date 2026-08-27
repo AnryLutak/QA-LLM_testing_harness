@@ -79,6 +79,20 @@ PARSES = [
     pytest.param("EUR 1.400",               {1400},       id="EUR-then-dot-thousands"),
     pytest.param("€1.400 per month",        {1400},       id="symbol-dot-thousands"),
 
+    # --- amounts below the old plausibility floor -------------------------
+    # These MOVED here from UNPARSEABLE, and not because anything could not read
+    # them: "50 EUR" parsed to 50 and was then refused for being small. The
+    # refusal went to .unparseable, which is the channel meaning "the harness
+    # cannot read this", so check_grounding reported ERROR — go fix the parser —
+    # for an answer that had quoted a figure no document supports. That is FAIL
+    # and a different engineer's ticket.
+    #
+    # The CEILING stays, because that refusal is a different claim: see the
+    # implausibly-long-number row below, which is a mis-grouped separator rather
+    # than a small number.
+    pytest.param("a 50 EUR admin fee",      {50},         id="small-amount"),
+    pytest.param("€99 booking deposit",     {99},         id="two-digit-amount"),
+
     # --- several amounts in one answer ----------------------------------
     pytest.param("400 EUR and 1400 EUR",    {400, 1400},  id="two-amounts"),
     pytest.param(

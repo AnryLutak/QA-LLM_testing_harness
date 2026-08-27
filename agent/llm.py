@@ -215,7 +215,20 @@ def generate(query, docs, calls, spotlight=False, attempt=0, max_retries=4):
     client = OpenAI()
     supports_temp = _SUPPORTS_TEMPERATURE.get(mdl, True)
     delay = 2.0
-    for i in range(max_retries):
+    resp = None
+    # THE TEMPERATURE PROBE IS A DISCOVERY, NOT A RETRY, so it must not spend
+    # the budget. evals/judge.py says "see the identical note in agent/llm.py"
+    # about this loop; the note was aspirational and the bug was still here.
+    #
+    # It was `for i in range(max_retries)` with the probe reaching `continue`
+    # without decrementing anything. Two consequences, one cosmetic and one not:
+    # a model that refuses the parameter got three real attempts instead of
+    # four, and a probe landing on the FINAL iteration fell out of the loop with
+    # `resp` unbound — reachable as three rate-limited attempts followed by the
+    # first response that validates parameters, and arriving as
+    # `UnboundLocalError: resp` two frames from a client that was working fine.
+    attempts_left = max_retries
+    while attempts_left > 0:
         kwargs = {"model": mdl, "messages": messages}
         if supports_temp:
             kwargs["temperature"] = TEMPERATURE
@@ -226,18 +239,30 @@ def generate(query, docs, calls, spotlight=False, attempt=0, max_retries=4):
             msg = str(exc)
             # Reasoning-class models fix temperature and reject the parameter.
             # Probed, not hardcoded — a table of model capabilities ages badly.
+            # Costs one wasted call per model, once, and cannot loop: the flag
+            # it clears is the same flag this branch tests.
             if "temperature" in msg and supports_temp:
                 supports_temp = False
                 _SUPPORTS_TEMPERATURE[mdl] = False
                 continue
+            attempts_left -= 1
             is_rate = "429" in msg or "rate_limit" in msg
             if is_rate and ("per day" in msg or "RPD" in msg):
                 raise SystemExit(f"{mdl}: daily quota exhausted. Cached work kept.")
-            if is_rate and i < max_retries - 1:
+            if is_rate and attempts_left > 0:
                 time.sleep(delay)
                 delay *= 2
                 continue
             raise
+
+    if resp is None:
+        # Belt and braces, and the same guard judge.py carries: every path out
+        # of the loop above either breaks with a response or raises. If a future
+        # edit adds a third one, this fails by name instead of by AttributeError
+        # on None three lines down.
+        raise SystemExit(
+            f"{mdl}: {max_retries} attempts produced no response. "
+            f"Cached work is kept, so re-running resumes.")
 
     _calls += 1
     text = (resp.choices[0].message.content or "").strip()

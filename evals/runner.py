@@ -46,7 +46,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent import agent, noise                # noqa: E402
+from agent import agent, llm, noise           # noqa: E402
 from evals import assertions, judge           # noqa: E402
 from evals.assertions import Status           # noqa: E402
 
@@ -182,7 +182,23 @@ def bootstrap_case_ci(per_case_rates, runs=1, iters=4000, seed="case-ci"):
 
 def run_once(case, j, seed, run_index):
     rng = noise.rng_for(seed, case["id"], run_index) if noise.TEMP > 0 else None
-    text, trace = agent.run(case["query"], rng=rng)
+    # THE RUN INDEX IS PART OF THE IDENTITY OF THE ANSWER, AND THIS FILE IS THE
+    # ONE THAT PRINTS THE CONFIDENCE INTERVALS.
+    #
+    # `attempt` reaches agent.generate() and from there the generation cache key
+    # (agent/llm.py). Without it, every one of `--runs N` looks up the same
+    # (model, prompt, attempt=0) entry on the live path, so runs 2..N are served
+    # run 1's completion and N identical answers are counted as N observations.
+    # Measured at TEMP=0, `--runs 20`: 520 "observations" from 26 model calls,
+    # reproducibility CI [85.4%, 90.9%], per-run sd 0.0%. The interval narrows by
+    # sqrt(20) on evidence nobody collected, `FLAKY: 0` is true by construction,
+    # and `--gate lower-bound` becomes a gate on the cache.
+    #
+    # evals/cache.py states the rule in its header and evals/redteam.py has
+    # always passed it; the omission was here, in the runner whose headline
+    # output is an error bar. The rate is a property of the cache the moment the
+    # key stops distinguishing the runs — see the instrument check in run().
+    text, trace = agent.run(case["query"], rng=rng, attempt=run_index)
     results = assertions.run_all(case, text, trace)
     score, reason = j.score(case, text, trace)
     blame = attribute(results)
@@ -238,11 +254,24 @@ def run(dataset_path=DATASET, runs=1, seed=None):
         na_by_check = Counter(n for a in attempts for n in a["na_checks"])
         error_by_check = Counter(n for a in attempts for n in a["error_checks"])
 
+        # INSTRUMENT SELF-CHECK — is this N observations, or one observation
+        # counted N times? evals/redteam.py has asked this in its `uniq` column
+        # since the day a pinned sampler made every attack rate 0% or 100%; the
+        # same failure is available here and is harder to see, because a
+        # degenerate eval run does not look decisive, it looks STABLE. Every
+        # number on the report gets better: 26/26 with no spread.
+        #
+        # Cheap to collect, and it catches the cache key that stopped
+        # distinguishing runs (see run_once), a stubbed client, and TEMP left at
+        # 0 while somebody reads the per-run spread as a variance measurement.
+        distinct = len({a["answer"] for a in attempts})
+
         rows.append({
             "id": case["id"],
             "group": case.get("group", ""),
             "query": case["query"],
             "runs": runs,
+            "distinct_answers": distinct,
             "passes": n_pass,
             "fails": n_fail,
             "vacuous": n_vac,
@@ -322,6 +351,15 @@ def summarise(rows, judge_name, runs):
 
     low_judge = sum(1 for r in rows for s in r["judge_scores"] if s < JUDGE_THRESHOLD)
 
+    # Degeneracy is only a DEFECT where variation was expected. At TEMP=0 on the
+    # templated path the agent is a lookup table and every case returning one
+    # answer is the documented behaviour, not an alarm — so the count is always
+    # reported and the alarm is gated on having asked for a stochastic system.
+    # A check that cries wolf on the default configuration gets muted, and a
+    # muted instrument check is worse than none.
+    degenerate = [r for r in rows if r["distinct_answers"] == 1]
+    variance_expected = runs > 1 and (noise.TEMP > 0 or llm.enabled())
+
     return {
         "generated": datetime.now().isoformat(timespec="seconds"),
         "bugs_enabled": sorted(agent.BUGS) or None,
@@ -347,6 +385,8 @@ def summarise(rows, judge_name, runs):
         "per_run_sd": round(sd, 4),
         "per_run_min": round(min(per_run), 4),
         "per_run_max": round(max(per_run), 4),
+        "degenerate_cases": len(degenerate),
+        "variance_expected": variance_expected,
         "failures_by_stage": dict(blame),
         "retrieval_precision": round(sum(prec) / len(prec), 3) if prec else None,
         "retrieval_recall": round(sum(rec) / len(rec), 3) if rec else None,
@@ -393,6 +433,29 @@ def print_report(rows, summary):
           f"min {summary['per_run_min']:.1%}   max {summary['per_run_max']:.1%}\n")
         w("                   ^ same code, same dataset. This is what CI would\n"
           "                     have printed on each of those runs.\n")
+
+        deg, cases_n = summary["degenerate_cases"], summary["cases"]
+        w(f"distinct answers:  {cases_n - deg} of {cases_n} cases varied across "
+          f"{runs} runs; {deg} produced ONE\n")
+        w(f"                   ^ a case with one distinct answer contributes "
+          f"{runs} identical\n"
+          "                     rows to an interval that assumes "
+          f"{runs} independent ones.\n")
+
+        if summary["variance_expected"] and deg == cases_n:
+            w("\n" + "!" * 74 + "\n")
+            w(f"DEGENERATE SAMPLING: all {cases_n} cases produced ONE distinct "
+              f"answer across\n{runs} runs, and this configuration asked for a "
+              "stochastic system. You\nmeasured one answer per case and divided. "
+              "Both intervals above are\nnarrowed by sqrt(runs) on evidence that "
+              "was never collected — do not\nquote them.\n\n")
+            w(f"  TEMP={summary['temp']}   live model: "
+              f"{llm.model() if llm.enabled() else 'no'}\n")
+            w("  Usual causes, in order: a generation cache key that does not\n"
+              "  distinguish the runs (the run index must reach agent.run as\n"
+              "  `attempt` — see run_once); TEMP=0 with --runs>1, which is a\n"
+              "  lookup table sampled repeatedly; a stubbed client.\n")
+            w("!" * 74 + "\n")
 
     if summary["retrieval_precision"] is not None:
         w(f"\nretrieval precision: {summary['retrieval_precision']:.3f}   "

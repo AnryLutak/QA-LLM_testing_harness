@@ -133,11 +133,39 @@ def _parse_filters(query):
     return filters
 
 
-def retrieve(query, intent, trace, rng=None):
+def retrieve(query, intent, trace, rng=None, viewer=None):
+    """Retrieve for THIS viewer.
+
+    The ACL is applied to the candidate pools before any other filter, which is
+    the whole of 3.2's product claim in three lines. Two things about the
+    placement matter more than the rule itself:
+
+    * **Before the query filters, not after, and never in the prompt.** A
+      document the caller may not see must not be a document the ranker can
+      choose; asking the model to ignore what it was handed is a preference
+      expressed in the same channel as the data it is protecting, and it fails
+      stochastically, which is worse than failing.
+    * **The jitter pool is filtered too.** noise.perturb_retrieval() can pull a
+      marginal document back in from `pool`, so an unfiltered pool would leak a
+      restricted document on exactly the runs that are hardest to reproduce.
+      Threshold noise is not a place where an access control gets to be
+      approximate.
+
+    `acl_disabled` is the seeded regression, in the same spirit as
+    `retrieval_ignores_city`: the suite has to be shown catching a broken ACL,
+    not merely asserted to be able to.
+    """
+    who = knowledge.viewer(viewer)
     filters = _parse_filters(query)
 
     if "retrieval_ignores_city" in BUGS:
         filters.pop("city", None)
+
+    if "acl_disabled" in BUGS:
+        listings, policies = knowledge.LISTINGS, knowledge.POLICIES
+    else:
+        listings = knowledge.visible_to(knowledge.LISTINGS, who)
+        policies = knowledge.visible_to(knowledge.POLICIES, who)
 
     if intent == "policy":
         q = query.lower()
@@ -146,9 +174,9 @@ def retrieve(query, intent, trace, rng=None):
                  else "cancellation" if "cancel" in q else None)
         # No recognised topic means no matching document. Returning all of them
         # produces a confidently wrong answer assembled from unrelated policies.
-        docs = [d for d in knowledge.POLICIES if d["topic"] == topic] if topic else []
+        docs = [d for d in policies if d["topic"] == topic] if topic else []
     elif intent == "search":
-        docs = knowledge.LISTINGS
+        docs = listings
         if "city" in filters:
             docs = [d for d in docs if d["city"] == filters["city"]]
         if "beds" in filters:
@@ -160,11 +188,14 @@ def retrieve(query, intent, trace, rng=None):
     else:
         docs = []
 
+    # Still ACL-respecting: this bug is about dropping QUERY filters, and a
+    # version of it that also dropped the access control would conflate two
+    # defects and make either one unmeasurable.
     if "retrieval_returns_everything" in BUGS and intent == "search":
-        docs = knowledge.LISTINGS
+        docs = listings
 
     # Threshold jitter: a marginal document in on one run, out on the next.
-    pool = knowledge.LISTINGS if intent == "search" else knowledge.POLICIES
+    pool = listings if intent == "search" else policies
     docs = noise.perturb_retrieval(docs, pool, rng)
 
     # DEFENCE=input_filter — drop any single document that looks like it
@@ -184,8 +215,15 @@ def retrieve(query, intent, trace, rng=None):
         docs = keep
 
     doc_ids = [d["id"] for d in docs]
+    # The viewer is recorded because doc_ids cannot be INTERPRETED without it:
+    # "L950 was retrieved" is a leak or a correct answer depending on who
+    # asked. What is deliberately NOT recorded is whether the ACL ran — a check
+    # that read the agent's own claim about enforcing an access control would
+    # pass just as happily against an agent that logged the claim and did
+    # nothing, which is the same rule that keeps the security checks out of
+    # trace["injection"].
     trace.add("retrieval", filters=filters, doc_ids=doc_ids, count=len(doc_ids),
-              filtered_out=filtered)
+              filtered_out=filtered, viewer=who["id"])
     return docs
 
 
@@ -393,12 +431,17 @@ def apply_output_actions(text, trace, docs):
     return clean
 
 
-def run(query, rng=None, attempt=0):
+def run(query, rng=None, attempt=0, viewer=None):
     """Answer one query. Returns (text, trace).
 
     rng=None means fully deterministic — identical bytes every call, which is
     what the original suite relied on. Pass a Random (and set TEMP>0) to get a
     system that behaves like an LLM instead of like a lookup table.
+
+    `viewer` is who is asking. It defaults to the anonymous public viewer, so
+    every existing call site keeps its exact previous behaviour — which was the
+    condition for adding an ACL to a repo whose saved measurements were all
+    taken without one.
 
     `attempt` is the run index. It reaches llm.generate() so repeated runs of
     the same case are cached separately; without it, `--runs 60` would serve
@@ -407,7 +450,7 @@ def run(query, rng=None, attempt=0):
     """
     trace = Trace()
     intent = route(query, trace, rng)
-    docs = retrieve(query, intent, trace, rng)
+    docs = retrieve(query, intent, trace, rng, viewer)
 
     # Read the retrieved context for instructions, ONCE, between retrieval and
     # the stages that act. Once, because compliance is probabilistic: deciding

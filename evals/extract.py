@@ -37,7 +37,24 @@ NAIVE = re.compile(r"^\d{3,5}$")
 
 HARNESS_BUGS = {b.strip() for b in os.environ.get("HARNESS_BUGS", "").split(",")
                 if b.strip()}   # TIGHT
-MIN_PLAUSIBLE, MAX_PLAUSIBLE = 100, 999_999
+
+# A CEILING, AND DELIBERATELY NO FLOOR.
+#
+# The ceiling refuses a magnitude the parser has probably MIS-READ rather than
+# returning it: "€12345678" is money-shaped, and reading it as 12.3M EUR/month
+# is not a parse, it is a mis-grouped separator. That refusal is fail-closed and
+# is pinned by the implausibly-long-number row in tests/test_extract.py.
+#
+# There used to be a floor at 100, and a floor is not the same kind of guard.
+# "50 EUR" is not a mis-read, it is fifty euros — the detector already required
+# a currency token beside it. Refusing it sent a perfectly readable figure to
+# .unparseable, and check_grounding then reported Status.ERROR: "the harness
+# cannot read this, go fix the parser", for an answer that had quoted a number
+# no document supports. That is Status.FAIL and somebody else's ticket. Both
+# block the build, so it never went green — it went to the wrong engineer,
+# which is the exact misattribution check_forbidden's comment argues against one
+# module up.
+MAX_PLAUSIBLE = 999_999
 
 def _parse(raw):
     """One span -> int, or None if this parser will not guess."""
@@ -46,7 +63,7 @@ def _parse(raw):
     if not pattern.match(candidate):
         return None
     value = int(re.sub(_SEP, "", candidate))
-    if not (MIN_PLAUSIBLE <= value <= MAX_PLAUSIBLE):
+    if value > MAX_PLAUSIBLE:
         return None
     return value
 
