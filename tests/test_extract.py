@@ -241,6 +241,38 @@ def test_seeded_naive_parser_makes_ERROR_reachable():
     assert p.returncode == 0, f"naive mode did not behave as seeded:\n{p.stderr}"
 
 
+def test_the_seeded_parser_bug_is_read_at_call_time():
+    """Set HARNESS_BUGS AFTER importing, and it must still arm.
+
+    The sibling of test_every_agent_knob_is_read_at_call_time in
+    tests/test_harness.py, for the one knob that module cannot see. This was a
+    module-level set, so the value was whatever the environment held when
+    something first imported evals.extract — and evals.runner imports it
+    transitively. The seeded defect then never armed, Status.ERROR stayed
+    unreachable, and nothing said so.
+
+    Note that the subprocess test above CANNOT catch this: a fresh interpreter
+    reads the environment on its first import either way. That is precisely why
+    the switch needed a subprocess to observe at all, and why an in-process test
+    is the one that pins the fix.
+    """
+    saved = os.environ.get("HARNESS_BUGS")
+    try:
+        os.environ["HARNESS_BUGS"] = "money_parser_naive"
+        m = money_mentions("1 400 EUR")
+        assert not m.values and m.unparseable == ["1 400 EUR"], (
+            f"HARNESS_BUGS set after import did not arm the seeded defect: {m}")
+
+        del os.environ["HARNESS_BUGS"]
+        assert money_mentions("1 400 EUR").values == {1400}, (
+            "disarming must work too, or one test poisons every later one")
+    finally:
+        if saved is None:
+            os.environ.pop("HARNESS_BUGS", None)
+        else:
+            os.environ["HARNESS_BUGS"] = saved
+
+
 def test_default_parser_is_not_naive():
     """The seeded bug must be OFF by default, or 'fixed' means nothing."""
     m = money_mentions("1 400 EUR and 1.400 EUR")

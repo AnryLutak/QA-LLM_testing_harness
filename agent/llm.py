@@ -66,15 +66,20 @@ from evals.cache import Cache
 # purpose silently discard the other.
 CACHE = Cache(path=os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), "evals", ".llm_cache.json"),
-    enabled=os.environ.get("LLM_CACHE", "1") != "0")
+    enabled=lambda: os.environ.get("LLM_CACHE", "1") != "0")
 
-TAG = os.environ.get("LLM_TAG", "v1")
+
+def tag():
+    return os.environ.get("LLM_TAG", "v1")
 
 # Budget cap. A red-team suite is itself an unbounded-consumption risk:
 # `--compare --runs 60` across five defence configurations is 2,100 calls, and
 # adding a second model doubles it. LLM06 aimed at your own harness. Fail loudly
 # at the ceiling rather than discovering it on an invoice.
-MAX_CALLS = int(os.environ.get("LLM_MAX_CALLS", "600"))
+def max_calls():
+    return int(os.environ.get("LLM_MAX_CALLS", "600"))
+
+
 _calls = 0
 
 # TEMPERATURE IS A MEASUREMENT DECISION, AND IT POINTS THE OPPOSITE WAY HERE.
@@ -96,7 +101,17 @@ _calls = 0
 # So the live red-team path samples at the model's default. Reproducibility
 # comes from the cache being keyed on (model, prompt, attempt), not from
 # suppressing the randomness we are trying to measure.
-TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "1.0"))
+#
+# AND, LIKE EVERY OTHER KNOB IN agent/, IT IS READ WHEN IT IS USED. This was a
+# module-level `TEMPERATURE = float(os.environ.get(...))`, so the value was
+# whatever the environment held when something first imported this file. A
+# caller that set LLM_TEMPERATURE afterwards silently got 1.0 — and since the
+# temperature is part of the cache key three functions down, the completions it
+# then paid for were filed under an identity that was not theirs, which is the
+# same labelling bug judge._key documents from the other side. See agent.bugs()
+# for the rule this file now follows.
+def temperature():
+    return float(os.environ.get("LLM_TEMPERATURE", "1.0"))
 
 # When the completion most recently served was PRODUCED — not when it was read.
 # A cache hit reports the timestamp stored with the entry; a fresh call reports
@@ -200,20 +215,44 @@ def generate(query, docs, calls, spotlight=False, attempt=0, max_retries=4):
     #
     # General rule, and the one this file got wrong twice: any parameter that
     # can change the response is part of the identity of the response.
-    key = CACHE.key(mdl, f"generation@t{TEMPERATURE}", prompt, attempt, tag=TAG)
+    temp = temperature()
+
+    # ...AND SO IS "THE MODEL REFUSED THE PARAMETER", which is the half this
+    # file got wrong for a third time. The key was built from `temp` alone, and
+    # the probe below discovers only AFTER the lookup that a reasoning-class
+    # model fixes temperature and rejects the argument. So a completion
+    # produced at the model's own default was written back under `@t1.0` — a
+    # default-temperature measurement filed as a pinned one, which is verbatim
+    # the bug evals/judge.py._key documents and solved with a `@tdefault`
+    # namespace. Two further consequences, both silent:
+    #
+    #   * once the probe has flipped the flag, every later lookup asks for
+    #     `@tdefault` and misses the entries already paid for, forever
+    #   * a red-team report can then mix pinned and unpinned completions for
+    #     one model with nothing on the page to say so
+    #
+    # So the label is a function of the flag, resolved before the lookup and
+    # AGAIN after the call, because the call is what can change it. Models that
+    # accept temperature keep the `@t{temp}` namespace, so every entry already
+    # on disk stays valid; only the entries that were mislabelled move.
+    def cache_key(supports):
+        label = f"generation@t{temp}" if supports else "generation@tdefault"
+        return CACHE.key(mdl, label, prompt, attempt, tag=tag())
+
+    supports_temp = _SUPPORTS_TEMPERATURE.get(mdl, True)
     global LAST_TS
-    cached = CACHE.get(key)
+    cached = CACHE.get(cache_key(supports_temp))
     if cached is not None:
         LAST_TS = cached.get("ts")
         return cached["text"]
 
-    if _calls >= MAX_CALLS:
+    budget = max_calls()
+    if _calls >= budget:
         raise SystemExit(
-            f"LLM_MAX_CALLS ({MAX_CALLS}) reached. Raise it deliberately, or "
+            f"LLM_MAX_CALLS ({budget}) reached. Raise it deliberately, or "
             f"lower --runs. Cached work is kept, so re-running resumes.")
 
     client = OpenAI()
-    supports_temp = _SUPPORTS_TEMPERATURE.get(mdl, True)
     delay = 2.0
     resp = None
     # THE TEMPERATURE PROBE IS A DISCOVERY, NOT A RETRY, so it must not spend
@@ -231,7 +270,7 @@ def generate(query, docs, calls, spotlight=False, attempt=0, max_retries=4):
     while attempts_left > 0:
         kwargs = {"model": mdl, "messages": messages}
         if supports_temp:
-            kwargs["temperature"] = TEMPERATURE
+            kwargs["temperature"] = temp
         try:
             resp = client.chat.completions.create(**kwargs)
             break
@@ -267,7 +306,11 @@ def generate(query, docs, calls, spotlight=False, attempt=0, max_retries=4):
     _calls += 1
     text = (resp.choices[0].message.content or "").strip()
     LAST_TS = time.time()
-    CACHE.set(key, {"text": text, "model": mdl, "ts": LAST_TS})
+    # Written under the label the call ACTUALLY ran with, not the one assumed
+    # before it — see cache_key above.
+    CACHE.set(cache_key(supports_temp),
+              {"text": text, "model": mdl, "ts": LAST_TS,
+               "temperature": temp if supports_temp else "model default"})
     return text
 
 

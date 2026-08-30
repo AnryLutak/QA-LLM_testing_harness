@@ -43,7 +43,24 @@ import os
 import random
 import re
 
-TEMP = float(os.environ.get("TEMP", "0") or 0)
+def _env_temp():
+    return float(os.environ.get("TEMP", "0") or 0)
+
+
+def temp():
+    """The configured noise level, READ AT CALL TIME.
+
+    Was `TEMP = float(os.environ.get(...))` at module scope, which meant a
+    caller that imported this module before setting TEMP got a silent, permanent
+    zero: a suite that asked for a stochastic system and measured a lookup
+    table, with `--runs 20` dividing one answer by twenty. Same class as
+    agent.bugs() and knowledge's corpus — see the docstring on agent.bugs() for
+    the rule this module now follows too.
+
+    `_env_temp` exists because the four functions below take a `temp` keyword
+    that would shadow this name inside their own bodies.
+    """
+    return _env_temp()
 
 
 def rng_for(seed, case_id, run_index):
@@ -66,7 +83,7 @@ def maybe_misroute(intent, ambiguous, rng, temp=None):
     A ~17x difference, which is roughly what a real classifier looks like near
     its decision boundary versus far from it.
     """
-    temp = TEMP if temp is None else temp
+    temp = _env_temp() if temp is None else temp
     if temp <= 0 or rng is None:
         return intent
     p = temp * (0.50 if ambiguous else 0.03)
@@ -89,7 +106,7 @@ def perturb_retrieval(docs, all_docs, rng, temp=None):
     the bigger the result set, the more documents are near the boundary, so
     the more often the set changes between runs.
     """
-    temp = TEMP if temp is None else temp
+    temp = _env_temp() if temp is None else temp
     if temp <= 0 or rng is None or not docs:
         return docs
 
@@ -118,9 +135,19 @@ _MONEY_STYLES = [
     lambda n: f"{n} euros",
     lambda n: f"EUR {n}",
     # No-break space as a thousands separator ( ). Common in European
-    # formatting and deliberately NOT parseable by evals/extract.py, so this
-    # style is what exercises the Status.ERROR path end to end. Amounts under
-    # four digits have no group to separate and come out unchanged.
+    # formatting, and once the one style evals/extract.py could not read —
+    # it was how the Status.ERROR path got exercised end to end.
+    #
+    # IT NO LONGER IS, and the comment saying so outlived the fact. When the
+    # parser was taught that a thousands separator is about the GROUP LENGTH
+    # rather than the symbol, extract._SEP gained the no-break spaces along
+    # with '.' and ',', so "1 400 EUR" now parses cleanly to 1400. The code
+    # is right; the coverage claim was stale, which is the worse of the two
+    # to leave lying around — it tells the next reader a path is covered
+    # when nothing exercises it. The eval suite reaches Status.ERROR through
+    # HARNESS_BUGS=money_parser_naive, a seeded and labelled defect, which
+    # is the better instrument anyway. Amounts under four digits have no
+    # group to separate and come out unchanged.
     lambda n: (f"{n[:-3]} {n[-3:]} EUR" if len(n) > 3 else f"{n} EUR"),
 ]
 
@@ -138,7 +165,7 @@ def paraphrase(text, rng, temp=None):
     Applied on nearly every run when temp > 0, because that is how models
     behave. Nothing here changes a single fact — only how it is written.
     """
-    temp = TEMP if temp is None else temp
+    temp = _env_temp() if temp is None else temp
     if temp <= 0 or rng is None:
         return text
 
@@ -168,7 +195,7 @@ def maybe_drop_average(text, rng, temp=None):
     mention something it was supposed to mention. Rare, and much harder to
     notice than a wrong number.
     """
-    temp = TEMP if temp is None else temp
+    temp = _env_temp() if temp is None else temp
     if temp <= 0 or rng is None:
         return text
     if rng.random() < temp * 0.08:

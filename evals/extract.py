@@ -35,8 +35,33 @@ STRICT = re.compile("^\\d{1,3}(?:" + _SEP + "\\d{3})+$|^\\d+$")
 # defect beats a genuine one kept around for the screenshot.
 NAIVE = re.compile(r"^\d{3,5}$")
 
-HARNESS_BUGS = {b.strip() for b in os.environ.get("HARNESS_BUGS", "").split(",")
-                if b.strip()}   # TIGHT
+def harness_bugs():
+    """Seeded HARNESS defects, READ AT CALL TIME.
+
+    This was `HARNESS_BUGS = {...}` at module scope, and it was the last knob
+    in the repo still frozen at import — the same defect agent.bugs(),
+    noise.temp(), llm.temperature() and knowledge's `_ensure` each document
+    from their own side, and the one `test_every_agent_knob_is_read_at_call_time`
+    pins for agent/ but cannot see here:
+
+        >>> from evals.extract import money_mentions   # anything imports it
+        >>> os.environ["HARNESS_BUGS"] = "money_parser_naive"
+        >>> money_mentions("1 400 EUR").values
+        {1400}
+
+    — the seeded defect never arms, Status.ERROR stays unreachable, and the
+    coverage claim in agent/noise.py's _MONEY_STYLES comment goes stale again
+    with nothing to announce it. It is also why
+    test_seeded_naive_parser_makes_ERROR_reachable had to spawn a SUBPROCESS to
+    observe its own switch: exactly the deferred-import gymnastics evals/redteam.py
+    carried until agent/ stopped reading its environment at import.
+
+    The module-level `HARNESS_BUGS` name is GONE rather than kept alongside
+    this function. A snapshot left in place for compatibility is a snapshot the
+    next reader will use, which reintroduces the freeze one import away.
+    """
+    return {b.strip() for b in os.environ.get("HARNESS_BUGS", "").split(",")
+            if b.strip()}
 
 # A CEILING, AND DELIBERATELY NO FLOOR.
 #
@@ -59,7 +84,7 @@ MAX_PLAUSIBLE = 999_999
 def _parse(raw):
     """One span -> int, or None if this parser will not guess."""
     candidate = raw.strip()
-    pattern = NAIVE if "money_parser_naive" in HARNESS_BUGS else STRICT
+    pattern = NAIVE if "money_parser_naive" in harness_bugs() else STRICT
     if not pattern.match(candidate):
         return None
     value = int(re.sub(_SEP, "", candidate))

@@ -51,11 +51,30 @@ class JudgeUnavailable(RuntimeError):
 
 # One shared cache per process. Set JUDGE_CACHE=0 to bypass it entirely
 # (no reads, no writes — which also loses resumability, so prefer a new TAG).
-CACHE = Cache(enabled=os.environ.get("JUDGE_CACHE", "1") != "0")
+CACHE = Cache(enabled=lambda: os.environ.get("JUDGE_CACHE", "1") != "0")
 
 # Experiment namespace. Bump it for a clean full run that is still resumable.
 # See Cache.key for why mixing vintages quietly biases a comparison.
-TAG = os.environ.get("JUDGE_TAG", "v1")
+#
+# A FUNCTION, and settable, for the reason agent.bugs() spells out: read at
+# import, JUDGE_TAG was frozen to whatever the environment held when something
+# first imported this module, so a caller that set it later kept writing into
+# the previous namespace — the one failure mode a tag exists to prevent.
+# `set_tag` is the programmatic form, used by evals/calibration.py's --tag; it
+# takes precedence over the environment because it is the more specific
+# instruction.
+_TAG_OVERRIDE = None
+
+
+def set_tag(value):
+    global _TAG_OVERRIDE
+    _TAG_OVERRIDE = value
+
+
+def tag():
+    if _TAG_OVERRIDE is not None:
+        return _TAG_OVERRIDE
+    return os.environ.get("JUDGE_TAG", "v1")
 
 
 def _contains(text, term):
@@ -292,7 +311,7 @@ class OpenAIJudge:
         how a correct fix gets postponed.
         """
         name = self.name if self.supports_temperature else f"{self.name}@tdefault"
-        return CACHE.key(self.model, name, prompt, nonce, tag=TAG)
+        return CACHE.key(self.model, name, prompt, nonce, tag=tag())
 
     def _validate(self, raw):
         """A score off the 1-5 scale is a protocol violation, not a datum.

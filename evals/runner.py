@@ -20,19 +20,26 @@ code change at all. The number you actually want is not "did it pass" but
 "what fraction of the time does it pass, and how sure am I of that fraction".
 
 Two different uncertainties get confused constantly, so this reports them
-separately:
+separately — and, just as importantly, with the estimator each one actually
+needs:
 
   run-to-run variance   Same dataset, same code, different sampling. Measured
                         directly: run the whole suite r times, look at the
-                        spread of the r pass rates. This is the one that makes
-                        CI flaky.
+                        spread of the r pass rates. Reported as a PREDICTION
+                        interval for the next run, because "will CI be green
+                        tomorrow" is a question about one future run and not
+                        about a mean. This is the one that makes CI flaky.
 
   dataset uncertainty   You measured 26 cases, but you care about the whole
                         input space. A confidence interval on the pass rate
                         addresses this — it is the "±" you should quote when
                         someone asks whether a change made things better.
 
-A single number with neither is a number with unknown error bars.
+A single number with neither is a number with unknown error bars. A number with
+the WRONG one is worse, because it looks like it has them: the reproducibility
+line used to be a Wilson interval over cases x runs treated as independent
+trials, which contained 2 of the 20 runs it was computed from. See
+run_prediction_ci.
 """
 
 import argparse
@@ -54,7 +61,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 DATASET = os.path.join(HERE, "dataset.json")
 
-STAGE_ORDER = ["routing", "retrieval", "tool_call", "generation"]
+STAGE_ORDER = ["routing", "retrieval", "tool_call", "generation",
+               "output_sink"]
 
 # Was 3, which passed an answer missing HALF the content its rubric required
 # (score = 1 + round(ratio*4) returns 3 at ratio 0.5). 4 means "at least three
@@ -115,6 +123,80 @@ def wilson(k, n, z=1.96):
     centre = (p + z * z / (2 * n)) / d
     half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
     return max(0.0, centre - half), min(1.0, centre + half)
+
+
+# Two-sided 95% critical values of Student's t, by degrees of freedom. Written
+# out for the same reason fisher_2x2 and _chi2_sf are: the alternative is a
+# dependency for one number. Above 30 df the normal value is within 2% and the
+# interval is dominated by sd anyway, so the table stops there.
+_T95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
+        8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160,
+        14: 2.145, 15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093,
+        20: 2.086, 21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064, 25: 2.060,
+        26: 2.056, 27: 2.052, 28: 2.048, 29: 2.045, 30: 2.042}
+
+
+def t95(df):
+    return _T95.get(df, 1.96) if df >= 1 else 1.96
+
+
+def run_prediction_ci(per_run_rates, n_cases):
+    """95% interval for THE PASS RATE OF THE NEXT COMPLETE RUN.
+
+    This is the "reproducibility" number, and it exists in this shape because
+    the old one was answering a different question from the one printed beside
+    it. It was `wilson(successes, cases * runs)` — a confidence interval on the
+    MEAN, computed as if 26 cases x 20 runs were 520 independent Bernoulli
+    trials — under the label:
+
+        reproducibility  95% CI [91.4%, 95.6%]
+                         "will CI print roughly this again tomorrow?"
+
+    Two things wrong with that, and they compound.
+
+    THE CLUSTERING. Twenty runs of one case are twenty looks at the SAME case,
+    not twenty draws. bootstrap_case_ci says exactly this, four lines down,
+    about the OTHER interval — and the reproducibility line went on treating
+    the same 520 numbers as independent. Correlated observations make a naive
+    interval too narrow, always, and in the flattering direction.
+
+    THE QUESTION. "Will CI print roughly this tomorrow" is about ONE FUTURE
+    RUN, so the object is a prediction interval, not a confidence interval on a
+    mean. A CI on the mean shrinks towards zero width as runs grow; the spread
+    of individual runs does not shrink at all. Asking the first question and
+    printing the answer to the second is how the report came to disagree with
+    its own next line — `sd 5.1% min 80.8% max 100.0%` sat two lines under a
+    "95%" interval containing 2 of the 20 runs it was drawn from.
+
+    So: t-based prediction interval over the observed run rates,
+
+        mean +/- t(0.975, r-1) * sd * sqrt(1 + 1/r)
+
+    which on that same data reads [82.7%, 100.0%] and holds 19 of the 20 runs —
+    what a 95% interval is supposed to do. Note it does NOT narrow with --runs
+    the way the old one did; more runs pin down the spread, they do not make a
+    stochastic system reproducible. That is the honest behaviour and it is why
+    --gate lower-bound reads this number.
+
+    THE DEGENERATE FLOOR, which is the same lesson bootstrap_case_ci learned.
+    With one run there is no spread to estimate, and with `runs` identical runs
+    the estimated spread is zero and the formula returns a POINT — "we are
+    certain what tomorrow prints", from a suite that measured one thing twice.
+    That is the failure mode wilson() exists in this file to refuse, arriving
+    for the third time by a third route. So when the spread is unmeasurable or
+    degenerate, fall back to Wilson over the CASES of a typical run, which is
+    the honest statement of what a single run supports. At runs=1 that is
+    exactly what this file printed before, so the default report is unchanged.
+    """
+    r = len(per_run_rates)
+    if r >= 2:
+        mean = sum(per_run_rates) / r
+        sd = (sum((x - mean) ** 2 for x in per_run_rates) / (r - 1)) ** 0.5
+        if sd > 0:
+            half = t95(r - 1) * sd * math.sqrt(1 + 1 / r)
+            return max(0.0, mean - half), min(1.0, mean + half)
+    mean = sum(per_run_rates) / r if r else 0.0
+    return wilson(mean * n_cases, n_cases)
 
 
 def bootstrap_case_ci(per_case_rates, runs=1, iters=4000, seed="case-ci"):
@@ -181,7 +263,7 @@ def bootstrap_case_ci(per_case_rates, runs=1, iters=4000, seed="case-ci"):
 
 
 def run_once(case, j, seed, run_index):
-    rng = noise.rng_for(seed, case["id"], run_index) if noise.TEMP > 0 else None
+    rng = noise.rng_for(seed, case["id"], run_index) if noise.temp() > 0 else None
     # THE RUN INDEX IS PART OF THE IDENTITY OF THE ANSWER, AND THIS FILE IS THE
     # ONE THAT PRINTS THE CONFIDENCE INTERVALS.
     #
@@ -314,16 +396,22 @@ def summarise(rows, judge_name, runs):
 
     observations = total_cases * runs
     successes = sum(r["passes"] for r in rows)
-    lo, hi = wilson(successes, observations)
-    case_lo, case_hi = bootstrap_case_ci([r["pass_rate"] for r in rows], runs)
 
     # Run-to-run spread: the pass rate of each COMPLETE pass over the dataset.
-    # This is what a CI job would have printed on run i.
+    # This is what a CI job would have printed on run i. Computed BEFORE the
+    # intervals now, because the reproducibility interval is built out of it.
     per_run = []
     for i in range(runs):
         per_run.append(sum(r["attempts"][i]["passed"] for r in rows) / total_cases)
     mean = sum(per_run) / len(per_run)
-    sd = (sum((x - mean) ** 2 for x in per_run) / len(per_run)) ** 0.5
+    # SAMPLE standard deviation (n-1), not population. These `runs` complete
+    # passes are a sample of the runs this suite could do, not the population of
+    # them, and the n-1 denominator is what run_prediction_ci needs downstream.
+    sd = (sum((x - mean) ** 2 for x in per_run) / (len(per_run) - 1)) ** 0.5 \
+        if len(per_run) > 1 else 0.0
+
+    lo, hi = run_prediction_ci(per_run, total_cases)
+    case_lo, case_hi = bootstrap_case_ci([r["pass_rate"] for r in rows], runs)
 
     blame = Counter()
     for r in rows:
@@ -358,12 +446,12 @@ def summarise(rows, judge_name, runs):
     # A check that cries wolf on the default configuration gets muted, and a
     # muted instrument check is worse than none.
     degenerate = [r for r in rows if r["distinct_answers"] == 1]
-    variance_expected = runs > 1 and (noise.TEMP > 0 or llm.enabled())
+    variance_expected = runs > 1 and (noise.temp() > 0 or llm.enabled())
 
     return {
         "generated": datetime.now().isoformat(timespec="seconds"),
-        "bugs_enabled": sorted(agent.BUGS) or None,
-        "temp": noise.TEMP,
+        "bugs_enabled": sorted(agent.bugs()) or None,
+        "temp": noise.temp(),
         "judge": judge_name,
         "runs_per_case": runs,
         "cases": total_cases,
@@ -379,6 +467,15 @@ def summarise(rows, judge_name, runs):
         "error_observations": sum(err_totals.values()),
         "task_success_rate": round(successes / observations, 4),
         "ci95": [round(lo, 4), round(hi, 4)],
+        # WHICH ESTIMATOR PRODUCED ci95, on the page and in the JSON. The two
+        # branches of run_prediction_ci answer the same question with very
+        # different evidence — measured run-to-run spread, or the fallback that
+        # fires when there is no spread to measure — and a reader who cannot
+        # tell them apart cannot tell a real interval from a degenerate one.
+        "ci95_basis": (f"n={runs} runs, t prediction interval"
+                       if runs > 1 and sd > 0 else
+                       f"no run-to-run spread to measure; Wilson over "
+                       f"{total_cases} cases of one run"),
         "ci95_cases": [round(case_lo, 4), round(case_hi, 4)],
         "per_run_rates": [round(x, 4) for x in per_run],
         "per_run_mean": round(mean, 4),
@@ -414,18 +511,23 @@ def print_report(rows, summary):
 
     lo, hi = summary["ci95"]
     clo, chi = summary["ci95_cases"]
+    basis = summary["ci95_basis"]
     w(f"\ntask success rate: {summary['task_success_rate']:.1%}\n")
-    w(f"  reproducibility  95% CI [{lo:.1%}, {hi:.1%}]   "
-      f"(n={summary['observations']} case-runs, Wilson)\n")
+    w(f"  reproducibility  95% PI  [{lo:.1%}, {hi:.1%}]   "
+      f"({basis})\n")
     w(f"                   \"will CI print roughly this again tomorrow?\"  "
-      f"-> narrows with --runs\n")
-    w(f"  generalisation   95% CI [{clo:.1%}, {chi:.1%}]   "
+      f"-> a PREDICTION interval\n")
+    w(f"  generalisation   95% CI  [{clo:.1%}, {chi:.1%}]   "
       f"(n={summary['cases']} cases, bootstrap/Wilson)\n")
     w(f"                   \"how well does this handle queries in general?\"  "
       f"-> narrows ONLY with more cases\n")
     w("  Quoting the first while meaning the second is the easiest mistake\n"
       "  on this page: it turns a claim about your test run into a claim\n"
       "  about your product.\n")
+    if runs > 1:
+        w("  The first is a range for ONE FUTURE RUN, not for the mean, so it\n"
+          "  does NOT shrink as --runs grows: more runs measure the spread\n"
+          "  better, they do not make a stochastic system reproducible.\n")
 
     if runs > 1:
         w(f"per-run spread:    mean {summary['per_run_mean']:.1%}   "
@@ -559,8 +661,10 @@ def main():
     ap.add_argument("--seed", default=None,
                     help="seed for reproducible stochastic runs")
     ap.add_argument("--gate", choices=["strict", "lower-bound"], default="strict",
-                    help="strict: any non-pass fails. "
-                         "lower-bound: fail if the CI lower bound is under --min-rate")
+                    help="strict: any non-pass fails. lower-bound: fail unless "
+                         "the reproducibility PREDICTION interval's lower bound "
+                         "is at least --min-rate, i.e. unless a future run is "
+                         "95%% likely to score above it")
     ap.add_argument("--min-rate", type=float, default=0.95)
     args = ap.parse_args()
 
@@ -575,11 +679,17 @@ def main():
         print(f"wrote {args.json}")
 
     if args.gate == "lower-bound":
+        # Reads the PREDICTION interval, which is the only one that means what
+        # a gate needs it to mean: "a future run will score at least this".
+        # Against the old confidence-interval-on-the-mean it read 91.4% on a
+        # suite whose individual runs went down to 80.8%, so the gate was
+        # tighter than the thing it was gating by a factor of about four — and
+        # tighter in the direction that lets a flaky suite through.
         lo = summary["ci95"][0]
         ok = lo >= args.min_rate
-        print(f"gate=lower-bound: CI lower bound {lo:.1%} "
+        print(f"gate=lower-bound: reproducibility PI lower bound {lo:.1%} "
               f"{'>=' if ok else '<'} required {args.min_rate:.1%} "
-              f"-> {'PASS' if ok else 'FAIL'}")
+              f"-> {'PASS' if ok else 'FAIL'}    ({summary['ci95_basis']})")
         return 0 if ok else 1
 
     # VACUOUS blocks too, and the omission was not cosmetic. `--gate strict` is

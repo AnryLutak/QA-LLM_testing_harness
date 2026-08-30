@@ -247,7 +247,7 @@ def main():
     args = ap.parse_args()
 
     if args.tag:
-        judge_mod.TAG = args.tag
+        judge_mod.set_tag(args.tag)
 
     state, cases = load()
     items = {i["id"]: i for i in state["items"]}
@@ -369,7 +369,7 @@ def main():
         results[name] = {"scores": scores, "consistency": consistency,
                          "temp_pinned": getattr(j, "supports_temperature", None)}
 
-    w(f"\n  judge cache: {judge_mod.CACHE.stats()}   tag={judge_mod.TAG}\n")
+    w(f"\n  judge cache: {judge_mod.CACHE.stats()}   tag={judge_mod.tag()}\n")
     if judge_mod.CACHE.hits and judge_mod.CACHE.misses:
         w("    MIXED VINTAGE: part of this report is re-used from an earlier\n"
           "    run and part is fresh. Fine for iterating; for a comparison you\n"

@@ -23,18 +23,18 @@ judge: heuristic   TEMP: 0.0   cases: 26 x 1 runs = 26 observations
 stable pass: 26   FLAKY: 0   stable fail: 0   VACUOUS: 0
 
 task success rate: 100.0%
-  reproducibility  95% CI [87.1%, 100.0%]   (n=26 case-runs, Wilson)
-  generalisation   95% CI [87.1%, 100.0%]   (n=26 cases, bootstrap/Wilson)
+  reproducibility  95% PI  [87.1%, 100.0%]   (no run-to-run spread to measure; Wilson over 26 cases of one run)
+  generalisation   95% CI  [87.1%, 100.0%]   (n=26 cases, bootstrap/Wilson)
 ```
 
-Those confidence intervals are the first thing worth noticing. 26 green tests
-do not support a claim of high reliability, and the report says so rather than
+Those intervals are the first thing worth noticing. 26 green tests do not
+support a claim of high reliability, and the report says so rather than
 printing a flattering 100%.
 
 They are identical here because at one run per case the two questions are
 asked of the same 26 numbers. They come apart the moment you run more than
-once — see [Statistics](#statistics), where the same suite reports [91.4%,
-95.6%] and [77.9%, 98.5%] side by side. Quoting the first while meaning the
+once — see [Statistics](#statistics), where the same suite reports [82.7%,
+100.0%] and [77.9%, 98.5%] side by side. Quoting the first while meaning the
 second turns a claim about your test run into a claim about your product.
 
 ---
@@ -195,9 +195,9 @@ TEMP=0.3 python3 -m evals.runner --runs 20 --seed s1
 stable pass: 11   FLAKY: 15   stable fail: 0   VACUOUS: 0
 
 task success rate: 93.8%
-  reproducibility  95% CI [91.4%, 95.6%]   (n=520 case-runs, Wilson)
-  generalisation   95% CI [77.9%, 98.5%]   (n=26 cases, bootstrap/Wilson)
-per-run spread:    mean 93.8%   sd 5.1%   min 80.8%   max 100.0%
+  reproducibility  95% PI  [82.7%, 100.0%]   (n=20 runs, t prediction interval)
+  generalisation   95% CI  [77.9%, 98.5%]    (n=26 cases, bootstrap/Wilson)
+per-run spread:    mean 93.8%   sd 5.2%   min 80.8%   max 100.0%
 distinct answers:  18 of 26 cases varied across 20 runs; 8 produced ONE
 ```
 
@@ -235,18 +235,33 @@ constantly and they answer opposite questions:
 
 ```
 task success rate: 93.8%
-  reproducibility  95% CI [91.4%, 95.6%]   (n=520 case-runs, Wilson)
-  generalisation   95% CI [77.9%, 98.5%]   (n=26 cases, bootstrap/Wilson)
+  reproducibility  95% PI  [82.7%, 100.0%]   (n=20 runs, t prediction interval)
+  generalisation   95% CI  [77.9%, 98.5%]    (n=26 cases, bootstrap/Wilson)
 ```
 
-*Reproducibility* is "will CI print roughly this again tomorrow?" and narrows
-with `--runs`. *Generalisation* is "how well does this handle queries in
-general?" and narrows **only with more cases** — twenty runs of one case are
-twenty looks at the same case, not twenty draws from the space of user queries.
-Resampling the 520 case-runs as if they were independent answers a question
-nobody asked, and answers it far too confidently. The generalisation interval
-therefore resamples the **case**, and re-draws that case's own runs while it is
-at it, because 19/20 is not a known 95% but a noisy estimate of one.
+*Reproducibility* is "will CI print roughly this again tomorrow?" — a question
+about **one future run**, so the answer is a *prediction* interval over the 20
+observed run rates, not a confidence interval on their mean. *Generalisation*
+is "how well does this handle queries in general?" and narrows **only with more
+cases** — twenty runs of one case are twenty looks at the same case, not twenty
+draws from the space of user queries. Resampling the 520 case-runs as if they
+were independent answers a question nobody asked, and answers it far too
+confidently. The generalisation interval therefore resamples the **case**, and
+re-draws that case's own runs while it is at it, because 19/20 is not a known
+95% but a noisy estimate of one.
+
+- **The reproducibility line used to be a Wilson interval over 520 case-runs**,
+  and it was wrong twice over in the same direction. Those 520 observations are
+  clustered by case, so treating them as independent narrows the interval;
+  and a confidence interval on a mean is not the answer to a question about a
+  single future run. It printed `[91.4%, 95.6%]` — an interval containing **2
+  of the 20 runs it was computed from**, sitting two lines above
+  `min 80.8% max 100.0%`, which is the same page contradicting itself. The
+  prediction interval reads `[82.7%, 100.0%]` and holds 19 of the 20, which is
+  what 95% is supposed to mean. Note it does **not** shrink with `--runs`: more
+  runs measure the spread better, they do not make a stochastic system
+  reproducible, and an interval that got tighter the longer you ran an
+  unchanged flaky suite was flattering exactly the thing it existed to expose.
 
 - **Wilson score intervals**, not the textbook normal approximation. At 26/26
   the naive formula gives `[1.0, 1.0]` — "we are certain this system never
@@ -272,9 +287,11 @@ at it, because 19/20 is not a known 95% but a noisy estimate of one.
 - **CI gate modes:** `--gate strict` fails on any non-pass — stable failures,
   flaky cases, harness errors and vacuous cases alike. `--gate lower-bound
   --min-rate 0.95` gates on the lower bound of the *reproducibility* interval
-  instead. Note that a lower-bound gate is sensitive to `--runs`: the interval
-  narrows as n grows, so the run count is part of the gate's definition, not an
-  implementation detail.
+  instead, which now means what a gate needs it to mean: "a future run is 95%
+  likely to score at least this". Against the old confidence-interval-on-the-
+  mean the gate read 91.4% on a suite whose individual runs went down to 80.8%
+  — about four times tighter than the thing it was gating, in the direction
+  that lets a flaky suite through.
 
 ---
 

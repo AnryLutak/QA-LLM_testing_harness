@@ -242,7 +242,7 @@ def test_judge_cache_key_carries_the_temperature_actually_used():
     unpinned run with nothing on the page to say so.
     """
     from evals.cache import Cache
-    from evals.judge import TAG
+    from evals.judge import tag
 
     pinned, unpinned = _bare_judge(pinned=True), _bare_judge(pinned=False)
     assert pinned._key("P", 0) != unpinned._key("P", 0)
@@ -252,7 +252,7 @@ def test_judge_cache_key_carries_the_temperature_actually_used():
     # bare judge name. A correct fix that costs 600 paid API calls is a correct
     # fix that gets postponed.
     assert pinned._key("P", 0) == Cache.key(
-        "gpt-4o-mini", "openai-anchored", "P", 0, tag=TAG)
+        "gpt-4o-mini", "openai-anchored", "P", 0, tag=tag())
 
 
 def test_judge_refuses_off_scale_scores_rather_than_clamping():
@@ -520,3 +520,177 @@ def test_na_counts_are_reported_per_check():
     assert summary["na_by_check"].get("forbidden_content", 0) > 0, \
         "most cases define no forbidden list; that must show up as N/A"
     assert all("na_by_check" in r for r in rows), "per-case N/A counts missing"
+
+
+# --- the reproducibility interval must answer its own question -------------
+#
+# It did not. `wilson(successes, cases * runs)` is a confidence interval on the
+# MEAN computed from correlated observations, and it was printed under "will CI
+# print roughly this again tomorrow?" — a question about ONE FUTURE RUN. Both
+# errors point the same way, so the interval was narrow, confident and wrong,
+# on the headline line of the report whose entire argument is honest error bars.
+
+def test_the_reproducibility_interval_covers_the_runs_it_was_computed_from():
+    """A 95% interval that holds 2 of 20 runs is not a 95% interval.
+
+    These are the real per-run rates from `TEMP=0.3 --runs 20 --seed s1`. The
+    old estimator returned [91.4%, 95.6%] over them and 18 of the 20 runs fell
+    outside it — including every single run that scored 96.2%, which is to say
+    the modal run. This is the arithmetic, so it needs no agent and no seed.
+    """
+    from evals.runner import run_prediction_ci, wilson
+
+    per_run = [0.9615, 0.8846, 0.9615, 0.9615, 0.9615, 0.9615, 0.9615, 0.9615,
+               1.0, 0.9615, 0.9231, 1.0, 0.8462, 0.8077, 0.9615, 1.0, 0.9615,
+               0.8846, 0.9231, 0.8846]
+
+    old_lo, old_hi = wilson(round(sum(per_run) * 26), 26 * len(per_run))
+    old_covered = sum(old_lo <= x <= old_hi for x in per_run)
+    assert old_covered <= 4, (
+        "the old estimator is no longer the thing this test contrasts against")
+
+    lo, hi = run_prediction_ci(per_run, 26)
+    covered = sum(lo <= x <= hi for x in per_run)
+    assert covered >= 19, (
+        f"a 95% prediction interval [{lo:.1%}, {hi:.1%}] covered {covered}/20 "
+        f"of the runs it was built from")
+    # ...and it is far more conservative than the interval it replaces. A 95%
+    # interval is SUPPOSED to leave roughly one run in twenty outside it, and
+    # the one it leaves out here is the worst run observed — which is the
+    # correct shape. What was wrong before was the width, not the coverage
+    # target: the old lower bound sat above 16 of the 20 runs.
+    assert lo < old_lo - 0.05, (
+        f"new lower bound {lo:.1%} is barely below the old {old_lo:.1%}; the clustered\n"
+        f"and prediction-vs-confidence corrections should move it several points")
+
+
+def test_the_reproducibility_interval_does_not_narrow_with_more_runs():
+    """More runs measure the spread better; they do not remove it.
+
+    The old interval shrank like 1/sqrt(cases * runs), so `--runs 100` on an
+    unchanged, visibly flaky system reported a tighter reproducibility claim
+    than `--runs 20` did — and `--gate lower-bound` reads that number, so the
+    gate got easier to pass the longer you ran it.
+    """
+    from evals.runner import run_prediction_ci
+
+    spread = [0.80, 0.85, 0.90, 0.95, 1.00] * 4          # 20 runs
+    lo20, hi20 = run_prediction_ci(spread, 26)
+    lo100, hi100 = run_prediction_ci(spread * 5, 26)     # 100 runs, same spread
+
+    assert (hi100 - lo100) > (hi20 - lo20) * 0.8, (
+        f"same spread, five times the runs, and the interval collapsed: "
+        f"{hi20 - lo20:.3f} -> {hi100 - lo100:.3f}")
+
+
+def test_a_run_set_with_no_spread_does_not_report_zero_uncertainty():
+    """The third route to 'certain from one observation', refused like the others.
+
+    wilson() exists in runner.py because the normal approximation claims
+    certainty at 26/26; bootstrap_case_ci carries the same guard because a
+    percentile bootstrap does it too. A prediction interval built on sd=0 is
+    the third: twenty identical runs give sd=0 and the formula returns a POINT.
+    """
+    from evals.runner import run_prediction_ci
+
+    lo, hi = run_prediction_ci([1.0] * 20, 26)
+    assert lo < 0.95, f"20 identical perfect runs must not imply certainty: [{lo}, {hi}]"
+
+    # A single run degrades to exactly what this file printed before the
+    # prediction interval existed, because one run supports exactly what one
+    # run supported. The default `python3 -m evals.runner` output — which the
+    # README quotes — is therefore byte-identical.
+    from evals.runner import wilson as _wilson
+    assert run_prediction_ci([1.0], 26) == _wilson(26, 26)
+    assert run_prediction_ci([24 / 26], 26) == _wilson(24, 26)
+
+
+def test_the_gate_reads_the_prediction_interval():
+    """--gate lower-bound must gate on the number that means what it needs.
+
+    A gate that reads a confidence interval on the mean is asking "is the
+    average good", when the thing it protects against is one bad run.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-m", "evals.runner", "--gate", "lower-bound",
+         "--min-rate", "0.5", "--runs", "3"],
+        cwd=ROOT, env=dict(os.environ, BUGS="", TEMP="0.3"),
+        capture_output=True, text=True)
+    assert "reproducibility PI lower bound" in proc.stdout, proc.stdout
+
+
+# --- configuration must not be frozen by import order ----------------------
+#
+# Every knob under agent/ used to be read at module scope, so the value was
+# whatever the environment held when something first imported the file. The
+# failure was silent and it pointed the wrong way: an unarmed bug, an unloaded
+# attack corpus and a TEMP that never took effect all report as a GREEN suite.
+# These pin the rule in the direction that matters — set it late, and it works.
+
+def test_every_agent_knob_is_read_at_call_time():
+    """Set the environment AFTER importing, and it must still take effect."""
+    from agent import agent, knowledge, llm, noise
+
+    saved = {k: os.environ.get(k) for k in
+             ("BUGS", "TEMP", "CORPUS_OVERLAY", "LLM_TEMPERATURE",
+              "LLM_MAX_CALLS", "LLM_TAG")}
+    try:
+        os.environ["BUGS"] = "generation_hallucinates_price"
+        os.environ["TEMP"] = "0.7"
+        os.environ["LLM_TEMPERATURE"] = "0.25"
+        os.environ["LLM_MAX_CALLS"] = "7"
+        os.environ["LLM_TAG"] = "late"
+        os.environ["CORPUS_OVERLAY"] = os.path.join(
+            ROOT, "security", "corpus_injected.json")
+
+        assert agent.bugs() == {"generation_hallucinates_price"}
+        assert noise.temp() == 0.7
+        assert llm.temperature() == 0.25
+        assert llm.max_calls() == 7
+        assert llm.tag() == "late"
+        assert knowledge.overlay_applied(), (
+            "CORPUS_OVERLAY set after import loaded nothing — this is the "
+            "fail-open shape: every attack runs against the pristine corpus "
+            "and every case reports PASS")
+
+        # ...and the seeded bug is really in force, not merely visible in a set.
+        text, _ = agent.run("What flats do you have in Seville?")
+        assert "400 EUR/month" in text, text
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        knowledge.refresh()
+
+
+def test_unsetting_the_corpus_overlay_releases_the_attack_documents():
+    """Arming has to be reversible, or one fixture poisons the whole process.
+
+    This is the property the test-suite isolation fix rests on: restoring
+    CORPUS_OVERLAY is enough to get the pristine corpus back, because the
+    corpus is rebuilt from the variable rather than mutated once at import.
+    """
+    from agent import knowledge
+
+    saved = os.environ.get("CORPUS_OVERLAY")
+    try:
+        os.environ.pop("CORPUS_OVERLAY", None)
+        clean = knowledge.doc_count()
+
+        os.environ["CORPUS_OVERLAY"] = os.path.join(
+            ROOT, "security", "corpus_injected.json")
+        assert knowledge.doc_count() > clean, "the overlay added nothing"
+        assert knowledge.get("L905") is not None, "an attack document is missing"
+
+        os.environ.pop("CORPUS_OVERLAY", None)
+        assert knowledge.doc_count() == clean, (
+            "attack documents outlived the variable that armed them")
+        assert knowledge.get("L905") is None
+    finally:
+        if saved is None:
+            os.environ.pop("CORPUS_OVERLAY", None)
+        else:
+            os.environ["CORPUS_OVERLAY"] = saved
+        knowledge.refresh()

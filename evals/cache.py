@@ -33,6 +33,15 @@ DEFAULT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 
 class Cache:
+    """`enabled` may be a bool or a zero-argument callable.
+
+    A callable is how agent/llm.py and evals/judge.py keep LLM_CACHE and
+    JUDGE_CACHE on the same rule as every other knob: read when used, not when
+    the module was imported. A bool still works, and is what a test that wants
+    the cache off for one function monkeypatches it to — `_on()` is the single
+    place that resolves either form, so no call site has to know which it got.
+    """
+
     def __init__(self, path=DEFAULT_PATH, enabled=True):
         self.path = path
         self.enabled = enabled
@@ -44,12 +53,16 @@ class Cache:
         # dict and every write of the file goes through this lock; without it
         # two threads flushing at once can interleave and truncate the file.
         self._lock = threading.Lock()
-        if enabled and os.path.exists(path):
+        if self._on() and os.path.exists(path):
             try:
                 with open(path, encoding="utf-8") as f:
                     self.data = json.load(f)
             except (json.JSONDecodeError, OSError):
                 self.data = {}          # a corrupt cache is not worth a crash
+
+    def _on(self):
+        """Resolve `enabled`, whichever form it took."""
+        return self.enabled() if callable(self.enabled) else bool(self.enabled)
 
     @staticmethod
     def key(model, judge_name, prompt, attempt, tag="v1"):
@@ -70,20 +83,29 @@ class Cache:
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def get(self, k):
-        if not self.enabled:
+        """The counters are updated INSIDE the lock, with the read.
+
+        `self.hits += 1` is a read-modify-write, and evals/calibration.py runs
+        this from eight threads by default. Lost increments there are not just
+        an off-by-a-few on a status line: stats() is the report's own vintage
+        disclosure, and calibration gates the MIXED VINTAGE warning on
+        `CACHE.hits and CACHE.misses`. A counter that can be wrong is a
+        disclosure that can be missing.
+        """
+        if not self._on():
             return None
         with self._lock:
             hit = self.data.get(k)
-        if hit is None:
-            self.misses += 1
-        else:
-            self.hits += 1
-            if isinstance(hit, dict) and hit.get("ts"):
-                self.hit_ages.append(hit["ts"])
+            if hit is None:
+                self.misses += 1
+            else:
+                self.hits += 1
+                if isinstance(hit, dict) and hit.get("ts"):
+                    self.hit_ages.append(hit["ts"])
         return hit
 
     def set(self, k, value):
-        if not self.enabled:
+        if not self._on():
             return
         with self._lock:
             self.data[k] = value
@@ -94,7 +116,7 @@ class Cache:
             self._flush_locked()
 
     def _flush_locked(self):
-        if not self.enabled:
+        if not self._on():
             return
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
